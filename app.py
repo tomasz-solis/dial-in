@@ -106,17 +106,16 @@ def main() -> None:
     target_date = closeout_date + timedelta(days=1)
     _render_app_header(location, closeout_date, target_date)
 
-    command_tab, closeout_tab, accuracy_tab, flow_tab, setup_tab, import_tab = st.tabs(
+    today_tab, closeout_tab, performance_tab, service_tab, setup_tab = st.tabs(
         [
-            "Command Center",
-            "Daily Closeout",
-            "Accuracy",
-            "Service Flow",
+            "Today",
+            "Close out",
+            "How it's doing",
+            "Service",
             "Setup",
-            "POS Import",
         ]
     )
-    with command_tab:
+    with today_tab:
         _render_command_center(
             settings.database_url,
             account_id,
@@ -132,10 +131,10 @@ def main() -> None:
             location,
             closeout_date,
         )
-    with accuracy_tab:
+    with performance_tab:
         _render_accuracy_tab(settings.database_url, account_id, location["location_id"])
         _render_correction_audit(settings.database_url, account_id, location["location_id"])
-    with flow_tab:
+    with service_tab:
         _render_service_flow_tab(
             settings.database_url,
             account_id,
@@ -150,7 +149,6 @@ def main() -> None:
             location,
             target_date,
         )
-    with import_tab:
         _render_import_tab(
             settings.database_url,
             account_id,
@@ -363,18 +361,9 @@ def _render_command_center(
         return
 
     _render_recommendation_hero(recommendation_rows, context, flow, target_date)
-    _render_prep_cards(recommendation_rows)
-
-    st.markdown("#### Demand flow")
-    _render_demand_flow(
-        curve=flow["curve"],
-        sellouts=flow["sellouts"],
-        close_time=flow["hours"].get("close_time"),
-        title="Expected drinks by half-hour",
-        key=f"command_pressure_{target_date.isoformat()}",
-    )
-    st.markdown("#### Context inputs")
-    _render_context_cards(context, target_date)
+    with st.expander("Why these numbers"):
+        _render_context_cards(context, target_date)
+        _render_why_details(recommendation_rows)
 
 
 def _render_recommendation_hero(
@@ -402,34 +391,72 @@ def _render_recommendation_hero(
             subtitle=" · ".join(subtitle_parts),
             prep_tiles_html=_hero_prep_tiles(rows),
             badges_html=ui.badges((confidence, risk), tone="dark"),
-            driver_html=_command_driver_chips(rows, context, target_date),
-            image_uri=_cafe_image_uri(),
+            reason=_reason_sentence(rows, context, target_date),
         ),
         unsafe_allow_html=True,
     )
 
 
-def _render_prep_cards(rows: list[dict[str, Any]]) -> None:
-    """Render category prep cards under the hero decision."""
+def _reason_sentence(
+    rows: list[dict[str, Any]],
+    context: dict[str, Any],
+    target_date: date,
+) -> str:
+    """Return one plain-language reason for the recommendation level."""
 
-    columns = st.columns(len(rows), gap="medium")
-    for column, row in zip(columns, rows, strict=False):
-        with column:
-            drivers = _driver_chips(row.get("top_drivers", []))
-            st.markdown(
-                ui.prep_card(
-                    category=str(row["category"]).title(),
-                    recommended=int(row["recommended_prep"]),
-                    demand_range=(
-                        f"{int(row['demand_p_lower'])}-{int(row['demand_p_upper'])}"
-                        f" · p50 {int(row['demand_p50'])}"
-                    ),
-                    confidence=row["confidence"],
-                    service_level=_format_percent(float(row["service_quantile"])),
-                    driver_html=drivers,
-                ),
-                unsafe_allow_html=True,
-            )
+    day = target_date.strftime("%A")
+    weather = context.get("weather")
+    events = context.get("events", [])
+    condition = str(weather.get("condition", "")).strip() if weather else ""
+    if condition and condition.casefold() != "seasonal normal":
+        subject = f"{condition.title()} {day.lower()}"
+    else:
+        subject = f"A normal {day}"
+    if events:
+        subject += f" plus {events[0].get('event_name', 'a local event')}"
+
+    lift = _external_lift(rows)
+    if lift > 1.04:
+        outlook = "expect a busier day than usual"
+    elif lift < 0.96:
+        outlook = "expect a quieter day than usual"
+    else:
+        outlook = f"demand should be close to a typical {day}"
+    return f"{subject} — {outlook}."
+
+
+def _external_lift(rows: list[dict[str, Any]]) -> float:
+    """Return the combined weather and event lift from stored drivers."""
+
+    lift = 1.0
+    seen: set[str] = set()
+    for row in rows:
+        drivers = row.get("top_drivers", [])
+        if isinstance(drivers, str):
+            drivers = json.loads(drivers)
+        for driver in drivers:
+            name = str(driver.get("name", ""))
+            if name in {"weather forecast", "local events"} and name not in seen:
+                seen.add(name)
+                lift *= float(driver.get("multiplier", 1.0))
+    return lift
+
+
+def _render_why_details(rows: list[dict[str, Any]]) -> None:
+    """Render per-category ranges, service levels, and drivers on demand."""
+
+    for row in rows:
+        st.markdown(
+            f"**{str(row['category']).title()}** — likely sells "
+            f"{int(row['demand_p_lower'])}-{int(row['demand_p_upper'])} "
+            f"(median {int(row['demand_p50'])}) · prep set at the "
+            f"{_format_percent(float(row['service_quantile']))} service level "
+            f"· {row['confidence']} confidence"
+        )
+        st.markdown(
+            f'<div class="di-chip-row">{_driver_chips(row.get("top_drivers", []))}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _render_context_cards(context: dict[str, Any], target_date: date) -> None:
@@ -971,38 +998,6 @@ def _driver_chips(value: Any) -> str:
     return "".join(chips)
 
 
-def _command_driver_chips(
-    rows: list[dict[str, Any]],
-    context: dict[str, Any],
-    target_date: date,
-) -> str:
-    """Return hero driver chips from context and recommendation drivers."""
-
-    labels = [_season_label(target_date)]
-    weather = _weather_summary(context.get("weather"))
-    event = _event_summary(context.get("events", []))
-    if weather != "Seasonal normal":
-        labels.append(weather)
-    if event != "No event logged":
-        labels.append(event)
-    for row in rows:
-        drivers = row.get("top_drivers", [])
-        if isinstance(drivers, str):
-            drivers = json.loads(drivers)
-        for driver in drivers[:2]:
-            label = _format_driver(driver)
-            if label not in labels:
-                labels.append(label)
-    return "".join(ui.chip(label) for label in labels[:5])
-
-
-@st.cache_data(show_spinner=False)
-def _cafe_image_uri() -> str:
-    """Return the local cafe image URI used by the Command Center hero."""
-
-    return ui.image_data_uri()
-
-
 def _scorecard_summary(card: dict[str, Any]) -> dict[str, str]:
     """Return formatted proof metrics from a repository scorecard."""
 
@@ -1054,6 +1049,7 @@ def _render_demand_flow(
         key=key,
         stockout_windows=_stockout_windows(sellouts, close_time),
     )
+    st.caption("Synthetic daypart shape from daily history — not live POS intraday data.")
     _render_sellout_snapshot(sellout_rows)
 
 
@@ -2252,17 +2248,17 @@ def _workflow_rows() -> list[dict[str, str]]:
     return [
         {
             "moment": "Before service",
-            "action": "Use the Prep tab",
-            "input": "Recommendation, service pressure, weather, events",
+            "action": "Check Today",
+            "input": "Recommendation, range, confidence, and the why",
         },
         {
             "moment": "End of day",
-            "action": "Submit Closeout",
+            "action": "Submit Close out",
             "input": "Drinks sold, sold units, prepared units",
         },
         {
             "moment": "Backfill",
-            "action": "Use Import",
+            "action": "Use Setup, POS CSV import",
             "input": "Historical POS CSV sales before API integration",
         },
         {
@@ -2277,8 +2273,8 @@ def _workflow_rows() -> list[dict[str, str]]:
         },
         {
             "moment": "Review",
-            "action": "Check Performance",
-            "input": "Overrides, corrections, waste and sellout proxies",
+            "action": "Check How it's doing",
+            "input": "Calibration, baselines, overrides, waste and sellout proxies",
         },
     ]
 

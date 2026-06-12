@@ -2,31 +2,15 @@
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Iterable
 from html import escape
-from pathlib import Path
 from typing import Any
-
-ASSET_ROOT = Path(__file__).resolve().parents[2] / "assets"
-CAFE_COUNTER_IMAGE = ASSET_ROOT / "cafe-counter-george-pagan-iii.jpg"
 
 
 def text(value: Any) -> str:
     """Return escaped display text for safe HTML rendering."""
 
     return escape(str(value))
-
-
-def image_data_uri(path: Path = CAFE_COUNTER_IMAGE) -> str:
-    """Return a local image as a data URI, or an empty string when unavailable."""
-
-    if not path.exists():
-        return ""
-    suffix = path.suffix.casefold()
-    mime_type = "image/png" if suffix == ".png" else "image/jpeg"
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
 
 
 def badge(label: Any, tone: str = "neutral") -> str:
@@ -101,29 +85,6 @@ def proof_card(label: Any, value: Any, caption: Any | None = None) -> str:
       <div class="di-card-label">{text(label)}</div>
       <div class="di-context-value">{text(value)}</div>
       {caption_html}
-    </div>
-    """
-
-
-def prep_card(
-    category: Any,
-    recommended: int,
-    demand_range: Any,
-    confidence: Any,
-    service_level: Any,
-    driver_html: str,
-) -> str:
-    """Return a category recommendation card."""
-
-    return f"""
-    <div class="di-card di-prep-card">
-      <div class="di-card-label">{text(category)}</div>
-      <div class="di-card-value">{recommended}</div>
-      <div class="di-card-caption">Demand {text(demand_range)}</div>
-      <div class="di-card-caption">
-        {text(confidence)} confidence · service level {text(service_level)}
-      </div>
-      <div class="di-chip-row">{driver_html}</div>
     </div>
     """
 
@@ -212,17 +173,10 @@ def command_hero(
     subtitle: Any,
     prep_tiles_html: str,
     badges_html: str,
-    driver_html: str,
-    image_uri: str,
+    reason: Any,
 ) -> str:
-    """Return the Command Center hero with local cafe imagery."""
+    """Return the decision-first hero: numbers, range, and one plain reason."""
 
-    image_style = (
-        f' style="background-image: linear-gradient(180deg, rgba(17,17,17,0.02), '
-        f'rgba(17,17,17,0.12)), url({image_uri});"'
-        if image_uri
-        else ""
-    )
     return f"""
     <div class="di-hero">
       <div class="di-hero-copy">
@@ -231,12 +185,8 @@ def command_hero(
         <p>{text(subtitle)}</p>
         <div class="di-hero-prep-grid">{prep_tiles_html}</div>
         <div class="di-hero-badges">{badges_html}</div>
-        <div class="di-driver-strip">
-          <div class="di-driver-label">Why it changed</div>
-          <div class="di-chip-row">{driver_html}</div>
-        </div>
+        <div class="di-hero-reason">{text(reason)}</div>
       </div>
-      <div class="di-hero-image"{image_style}></div>
     </div>
     """
 
@@ -255,7 +205,7 @@ def hero_prep_tile(
       <div>
         <div class="di-hero-prep-category">{text(category)}</div>
         <div class="di-hero-prep-caption">
-          Demand {text(demand_range)} · {text(confidence)} confidence
+          Likely sells {text(demand_range)} · {text(confidence)} confidence
         </div>
       </div>
     </div>
@@ -496,9 +446,6 @@ def app_styles() -> str:
         font-weight: 900;
     }
     .di-hero {
-        display: grid;
-        grid-template-columns: minmax(0, 1.22fr) minmax(300px, 0.78fr);
-        gap: 1rem;
         overflow: hidden;
         border: 1px solid #151515;
         border-radius: 18px;
@@ -512,7 +459,6 @@ def app_styles() -> str:
     }
     .di-hero-copy {
         display: flex;
-        min-height: 300px;
         flex-direction: column;
         justify-content: center;
         padding: clamp(0.6rem, 1.7vw, 1.4rem);
@@ -530,16 +476,6 @@ def app_styles() -> str:
         color: rgba(255,255,255,0.82);
         font-size: clamp(0.98rem, 1.3vw, 1.12rem);
         margin: 0;
-    }
-    .di-hero-image {
-        min-height: 300px;
-        border-radius: 14px;
-        background:
-            linear-gradient(135deg, rgba(131,215,192,0.24), rgba(255,255,255,0.08)),
-            #2c2c2c;
-        background-size: cover;
-        background-position: center;
-        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.16);
     }
     .di-hero-prep-grid {
         display: grid;
@@ -615,22 +551,14 @@ def app_styles() -> str:
     .di-badge-good { background: rgba(34,168,121,0.12); color: #126044; }
     .di-badge-warn { background: rgba(242,201,76,0.22); color: #755400; }
     .di-badge-risk { background: rgba(210,75,63,0.12); color: #8b281f; }
-    .di-driver-strip {
+    .di-hero-reason {
         max-width: 720px;
         margin-top: 0.95rem;
         border-top: 1px solid rgba(255,255,255,0.16);
         padding-top: 0.7rem;
-    }
-    .di-driver-label {
-        color: rgba(255,255,255,0.65);
-        font-size: 0.76rem;
-        font-weight: 850;
-        text-transform: uppercase;
-    }
-    .di-driver-strip .di-chip {
-        background: rgba(255,255,255,0.1);
-        border-color: rgba(255,255,255,0.18);
-        color: #ffffff;
+        color: rgba(255,255,255,0.85);
+        font-size: clamp(0.95rem, 1.3vw, 1.08rem);
+        line-height: 1.4;
     }
     .di-card,
     div[data-testid="stMetric"] {
@@ -639,10 +567,6 @@ def app_styles() -> str:
         border-radius: 14px;
         padding: 1rem;
         box-shadow: var(--di-shadow);
-    }
-    .di-prep-card {
-        min-height: 186px;
-        margin-bottom: 1rem;
     }
     .di-card-value {
         color: var(--di-ink);
@@ -917,19 +841,21 @@ def app_styles() -> str:
             grid-template-columns: 1fr 1fr;
         }
         .di-hero {
-            grid-template-columns: 1fr;
             padding: 1rem;
         }
-        .di-hero-copy { min-height: 0; }
+        .di-hero-copy { padding: 0.4rem 0.2rem; }
         .di-hero-prep-grid {
             grid-template-columns: 1fr;
         }
-        .di-hero-image {
-            min-height: 180px;
-            order: -1;
-        }
         .di-badge,
         .di-chip { white-space: normal; }
+        .stTabs [data-baseweb="tab-list"] {
+            overflow-x: auto;
+            flex-wrap: nowrap;
+        }
+        .stTabs [data-baseweb="tab"] {
+            white-space: nowrap;
+        }
         [data-testid="stForm"] {
             padding: 0.9rem;
         }

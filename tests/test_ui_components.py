@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from dialin import ui_components as ui
 
 
@@ -59,15 +57,17 @@ def test_command_hero_uses_prep_grid_and_escapes_copy() -> None:
         subtitle="Thursday <service>",
         prep_tiles_html=tile_html,
         badges_html=ui.badge("Low <confidence>", tone="dark"),
-        driver_html=ui.chip("High season"),
-        image_uri="",
+        reason="Sunny Saturday <plus market>",
     )
 
     assert "di-hero-prep-grid" in html
     assert "di-hero-prep-tile" in html
+    assert "di-hero-reason" in html
     assert "Prep &lt;today&gt;" in html
     assert "Thursday &lt;service&gt;" in html
     assert "Low &lt;confidence&gt;" in html
+    assert "Sunny Saturday &lt;plus market&gt;" in html
+    assert "di-hero-image" not in html
 
 
 def test_date_stack_separates_labels_from_dates() -> None:
@@ -151,15 +151,6 @@ def test_badge_rejects_unknown_tone() -> None:
     """Unknown badge tones should fall back to neutral styling."""
 
     assert "di-badge-neutral" in ui.badge("Ready", tone="made-up")
-
-
-def test_image_data_uri_reads_local_image(tmp_path: Path) -> None:
-    """Local assets should be embedded as data URIs instead of hotlinked."""
-
-    image_path = tmp_path / "tiny.jpg"
-    image_path.write_bytes(b"\xff\xd8\xff\xd9")
-
-    assert ui.image_data_uri(image_path).startswith("data:image/jpeg;base64,")
 
 
 def test_app_styles_exposes_core_layout_classes() -> None:

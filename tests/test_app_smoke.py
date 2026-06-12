@@ -175,27 +175,37 @@ def test_hero_prep_tiles_keep_categories_separate() -> None:
     assert "Savory" in html
 
 
-def test_command_driver_chips_skip_neutral_context() -> None:
-    """The hero should show signal, not neutral placeholder text."""
+def test_reason_sentence_names_weather_event_and_direction() -> None:
+    """The hero reason should read like plain language, not model jargon."""
 
-    html = app._command_driver_chips(
-        [
-            {
-                "top_drivers": [
-                    {"name": "sellout correction", "multiplier": 1.2},
-                    {"name": "sweet attach", "multiplier": 1.37},
-                    {"name": "extra driver", "multiplier": 1.1},
-                ]
-            }
-        ],
+    rows = [
+        {
+            "top_drivers": [
+                {"name": "weather forecast", "multiplier": 1.06},
+                {"name": "local events", "multiplier": 1.1},
+            ]
+        }
+    ]
+    context = {
+        "weather": {"condition": "sunny", "temp_forecast": 24.0},
+        "events": [{"event_name": "Weekly market"}],
+    }
+
+    sentence = app._reason_sentence(rows, context, date(2026, 6, 13))
+
+    assert sentence == "Sunny saturday plus Weekly market — expect a busier day than usual."
+
+
+def test_reason_sentence_stays_neutral_without_drivers() -> None:
+    """A day without external lift should not be sold as busier."""
+
+    sentence = app._reason_sentence(
+        [{"top_drivers": []}],
         {"weather": None, "events": []},
-        date(2026, 7, 10),
+        date(2026, 6, 11),
     )
 
-    assert "High season" in html
-    assert "Seasonal normal" not in html
-    assert "No event logged" not in html
-    assert html.count("di-chip") <= 5
+    assert sentence == "A normal Thursday — demand should be close to a typical Thursday."
 
 
 def test_service_window_formatting_handles_open_and_closed_days() -> None:

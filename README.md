@@ -62,13 +62,6 @@ The seeded demo accounts are:
 - `acct_fadri`: Fadri (fictionalized), Cambrils, Tarragona
 - `acct_dummy`: Station House Demo
 
-## Visual assets
-
-The Command Center uses a local stock image copied into `assets/` so the app does not
-hotlink production UI media. Current image: "Coffee shop counter with pastries and coffee
-equipment" by George Pagan III on Unsplash, available under the Unsplash License:
-https://unsplash.com/photos/coffee-shop-counter-with-pastries-and-coffee-equipment-a74KjMXgcCI
-
 ## Checks
 
 ```bash
