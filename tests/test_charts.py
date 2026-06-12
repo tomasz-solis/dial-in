@@ -109,6 +109,39 @@ def test_adherence_figure_keeps_expected_status_order() -> None:
     assert list(fig.data[0].x) == ["Followed", "Overridden", "Unattributed"]
 
 
+def test_calibration_coverage_figure_orders_confidence_labels() -> None:
+    """Coverage bars should follow Low to High order with a target line."""
+
+    fig = charts.calibration_coverage_figure(
+        {
+            "coverage": 0.79,
+            "by_confidence": {
+                "High": {"rows": 40, "coverage": 0.82},
+                "Low": {"rows": 10, "coverage": 0.7},
+            },
+        }
+    )
+
+    assert len(fig.data) == 1
+    assert list(fig.data[0].x) == ["Low", "High"]
+    assert fig.data[0].y[0] == 70.0
+
+
+def test_baseline_pinball_figure_skips_missing_losses() -> None:
+    """Baseline comparison should only plot computed losses."""
+
+    fig = charts.baseline_pinball_figure(
+        {
+            "model_pinball": 2.1,
+            "last_week_pinball": 3.4,
+            "trailing_pinball": None,
+        }
+    )
+
+    assert len(fig.data) == 1
+    assert list(fig.data[0].x) == ["Dial In", "Last week"]
+
+
 def test_sellout_timing_figure_uses_single_bar_trace() -> None:
     """Known sellout timing should render as a simple bar chart."""
 

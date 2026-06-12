@@ -1394,6 +1394,49 @@ def fetch_data_corrections(
         )
 
 
+def fetch_recommendation_outcomes(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+) -> list[dict[str, Any]]:
+    """Fetch recommendation rows joined with observed closeouts, with quantiles.
+
+    Unlike :func:`scorecard`, this keeps the stored demand quantiles, service
+    quantile, and confidence label so calibration coverage and pinball loss can
+    be computed against the model's own stated distribution.
+    """
+
+    with account_connection(database_url, account_id) as conn:
+        return fetch_all(
+            conn,
+            """
+            SELECT
+                r.date,
+                r.category,
+                r.recommended_prep,
+                r.demand_p50,
+                r.demand_p_lower,
+                r.demand_p_upper,
+                r.service_quantile,
+                r.confidence,
+                r.adhered,
+                c.sold,
+                c.prepared AS actual_prepared,
+                c.sold_out
+            FROM recommendations r
+            JOIN daily_category_metrics c
+              ON c.account_id = r.account_id
+             AND c.location_id = r.location_id
+             AND c.date = r.date
+             AND c.category = r.category
+            WHERE r.account_id = %s AND r.location_id = %s
+              AND c.input_source <> 'imputed'
+            ORDER BY r.date, r.category
+            """,
+            (account_id, location_id),
+        )
+
+
 def scorecard(database_url: str, account_id: str, location_id: str) -> dict[str, Any]:
     """Return an honest observed-only replay comparison for the app."""
 

@@ -6,8 +6,11 @@ from datetime import date
 from decimal import Decimal
 
 import pandas as pd
+import pytest
 
 from dialin.engine import (
+    FALLBACK_DEMAND_UPLIFT,
+    TAIL_FALLBACK_RISK_FLAG,
     _observed_category_history,
     _open_history_before,
     build_recommendations,
@@ -50,6 +53,81 @@ def test_decensoring_lifts_sold_out_days() -> None:
 
     sold_out_estimates = corrected[corrected["sold_out"] == True]["estimated_demand"]  # noqa: E712
     assert sold_out_estimates.min() > 40
+
+
+def test_decensoring_marks_tail_fallback_when_comparables_are_thin() -> None:
+    """The assumed-uplift path must be flagged, never silent."""
+
+    daily = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=6, freq="7D").date,
+            "is_open": [True] * 6,
+            "drinks_sold": [100, 102, 98, 140, 142, 141],
+        }
+    )
+    category = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=6, freq="7D").date,
+            "category": ["sweet"] * 6,
+            "sold": [30, 31, 29, 40, 40, 40],
+            "prepared": [36, 36, 36, 40, 40, 40],
+            "sold_out": [False, False, False, True, True, True],
+        }
+    )
+
+    corrected = decensored_demand_series(category, daily)
+
+    sold_out_rows = corrected[corrected["sold_out"] == True]  # noqa: E712
+    assert sold_out_rows["tail_fallback"].all()
+    assert not corrected[corrected["sold_out"] == False]["tail_fallback"].any()  # noqa: E712
+    assert sold_out_rows["estimated_demand"].min() == pytest.approx(
+        40 * FALLBACK_DEMAND_UPLIFT
+    )
+
+
+def test_recent_tail_fallback_forces_low_confidence() -> None:
+    """A recommendation leaning on the assumed tail must say so."""
+
+    dates = pd.date_range("2026-04-01", periods=30, freq="D").date
+    daily = pd.DataFrame(
+        {
+            "date": dates,
+            "is_open": [True] * 30,
+            "drinks_sold": [100] * 30,
+        }
+    )
+    category = pd.DataFrame(
+        {
+            "date": dates,
+            "category": ["sweet"] * 30,
+            "sold": [30] * 20 + [40] * 10,
+            "prepared": [36] * 20 + [40] * 10,
+            "sold_out": [False] * 20 + [True] * 10,
+        }
+    )
+    economics = pd.DataFrame(
+        {
+            "category": ["sweet"],
+            "service_quantile": [0.78],
+            "effective_from": [date(2025, 1, 1)],
+            "effective_to": [None],
+        }
+    )
+
+    results = build_recommendations(
+        account_id="acct_test",
+        location_id="loc_test",
+        target_date=date(2026, 5, 1),
+        daily_metrics=daily,
+        category_metrics=category,
+        weather=pd.DataFrame(),
+        events=pd.DataFrame(),
+        economics=economics,
+    )
+
+    assert len(results) == 1
+    assert results[0].confidence == "Low"
+    assert results[0].risk_flag == TAIL_FALLBACK_RISK_FLAG
 
 
 def test_training_history_excludes_imputed_daily_rows() -> None:

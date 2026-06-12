@@ -20,6 +20,7 @@ from dialin import ui_components as ui
 from dialin.config import Settings, load_settings
 from dialin.db import assert_not_owner_connection
 from dialin.demo_freshness import ensure_demo_data_fresh
+from dialin.metrics import calibration_coverage, evaluate_model_vs_baselines
 from dialin.pos_import import (
     CategoryMapping,
     PosColumnMapping,
@@ -41,6 +42,7 @@ from dialin.repository import (
     fetch_location_hours_plan,
     fetch_recent_pos_import_runs,
     fetch_recommendation_context,
+    fetch_recommendation_outcomes,
     fetch_recommendations_for_date,
     generate_and_store_recommendations,
     insert_manual_event,
@@ -352,7 +354,6 @@ def _render_command_center(
     )
     context = fetch_recommendation_context(database_url, account_id, location_id, target_date)
     flow = fetch_intraday_demo(database_url, account_id, location_id, target_date)
-    card = scorecard(database_url, account_id, location_id)
 
     if not recommendation_rows:
         st.info(
@@ -364,8 +365,6 @@ def _render_command_center(
     _render_recommendation_hero(recommendation_rows, context, flow, target_date)
     _render_prep_cards(recommendation_rows)
 
-    st.markdown("#### Proof snapshot")
-    _render_scorecard_snapshot(card)
     st.markdown("#### Demand flow")
     _render_demand_flow(
         curve=flow["curve"],
@@ -467,7 +466,7 @@ def _render_scorecard_snapshot(card: dict[str, Any]) -> None:
                 ui.proof_card(
                     "Waste proxy delta",
                     summary["waste_delta_label"],
-                    "Actual prep waste proxy minus Dial In proxy.",
+                    "Illustrative replay; both sides use censored sales — not a counterfactual.",
                 ),
                 ui.proof_card(
                     "Followed rate",
@@ -480,6 +479,104 @@ def _render_scorecard_snapshot(card: dict[str, Any]) -> None:
     )
 
 
+def _render_model_quality(database_url: str, account_id: str, location_id: str) -> None:
+    """Render calibration coverage and naive-baseline verdicts (PRD section 6.1)."""
+
+    outcomes = fetch_recommendation_outcomes(database_url, account_id, location_id)
+    matched = pd.DataFrame(outcomes)
+    if matched.empty:
+        return
+    history = fetch_history_frames(database_url, account_id, location_id)[
+        "daily_category_metrics"
+    ]
+    if "input_source" in history.columns:
+        history = history[history["input_source"] != "imputed"]
+    calibration = calibration_coverage(matched)
+    evaluation = evaluate_model_vs_baselines(matched, history)
+
+    st.markdown("#### Is the model earning trust?")
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.proof_card(
+                    "Range coverage",
+                    _coverage_label(calibration),
+                    _coverage_caption(calibration),
+                ),
+                ui.proof_card(
+                    "Beats last-week baseline",
+                    _verdict_label(evaluation.get("beats_last_week")),
+                    _baseline_caption(evaluation, "last_week_pinball"),
+                ),
+                ui.proof_card(
+                    "Beats 4-week baseline",
+                    _verdict_label(evaluation.get("beats_trailing")),
+                    _baseline_caption(evaluation, "trailing_pinball"),
+                ),
+            )
+        ),
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Scored on uncensored days only: sold-out days hide true demand, so they can "
+        "neither confirm nor refute a forecast. Pinball loss is evaluated at each "
+        "recommendation's own service quantile."
+    )
+    quality_left, quality_right = st.columns(2, gap="large")
+    with quality_left:
+        st.plotly_chart(
+            charts.calibration_coverage_figure(calibration),
+            width="stretch",
+            config=PLOTLY_CONFIG,
+            key="model_quality_calibration",
+        )
+    with quality_right:
+        st.plotly_chart(
+            charts.baseline_pinball_figure(evaluation),
+            width="stretch",
+            config=PLOTLY_CONFIG,
+            key="model_quality_baselines",
+        )
+
+
+def _coverage_label(calibration: dict[str, Any]) -> str:
+    """Return the headline calibration coverage value."""
+
+    coverage = calibration.get("coverage")
+    if coverage is None:
+        return "Not enough data"
+    return _format_percent(float(coverage))
+
+
+def _coverage_caption(calibration: dict[str, Any]) -> str:
+    """Return the calibration caption with the censoring exclusion made visible."""
+
+    uncensored = int(calibration.get("uncensored_rows", 0))
+    censored_share = float(calibration.get("censored_share", 0.0))
+    return (
+        f"Target ~80% · {uncensored} uncensored days · "
+        f"{_format_percent(censored_share)} of days sold out and are excluded."
+    )
+
+
+def _verdict_label(verdict: Any) -> str:
+    """Return a plain yes/no verdict for a baseline comparison."""
+
+    if verdict is None:
+        return "Not enough data"
+    return "Yes" if verdict else "Not yet"
+
+
+def _baseline_caption(evaluation: dict[str, Any], baseline_key: str) -> str:
+    """Return the pinball-loss caption for one baseline comparison card."""
+
+    model = evaluation.get("model_pinball")
+    baseline = evaluation.get(baseline_key)
+    if model is None or baseline is None:
+        return "Needs matched recommendation and closeout history."
+    return f"Pinball loss {model:.2f} vs {baseline:.2f} · {evaluation['evaluated_rows']} days."
+
+
 def _render_accuracy_tab(database_url: str, account_id: str, location_id: str) -> None:
     """Render observed accuracy and business impact proxy charts."""
 
@@ -490,6 +587,7 @@ def _render_accuracy_tab(database_url: str, account_id: str, location_id: str) -
         "These are observed proxies. Sold-out days hide true demand, so the app does not "
         "treat sales alone as full forecast accuracy."
     )
+    _render_model_quality(database_url, account_id, location_id)
     _render_scorecard_snapshot(card)
 
     if frame.empty:

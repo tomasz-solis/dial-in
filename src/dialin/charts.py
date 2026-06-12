@@ -229,6 +229,71 @@ def sellout_timing_figure(frame: pd.DataFrame) -> go.Figure:
     )
 
 
+def calibration_coverage_figure(calibration: dict[str, Any]) -> go.Figure:
+    """Build coverage-by-confidence bars against the stated target band."""
+
+    by_confidence = calibration.get("by_confidence", {})
+    order = [label for label in ("Low", "Medium", "High") if label in by_confidence]
+    fig = go.Figure()
+    if order:
+        coverages = [float(by_confidence[label]["coverage"]) * 100 for label in order]
+        rows = [int(by_confidence[label]["rows"]) for label in order]
+        fig.add_trace(
+            go.Bar(
+                x=order,
+                y=coverages,
+                marker={"color": GREEN},
+                customdata=rows,
+                hovertemplate=(
+                    "<b>%{x} confidence</b><br>"
+                    "Range contained sales: %{y:.0f}%<br>"
+                    "Uncensored days: %{customdata}<extra></extra>"
+                ),
+                name="Coverage",
+            )
+        )
+        fig.add_hline(
+            y=80,
+            line={"color": MUTED, "width": 2, "dash": "dash"},
+            annotation_text="~80% target",
+            annotation_font={"color": MUTED},
+        )
+    return finish_figure(
+        fig,
+        title="Range coverage by confidence label",
+        height=280,
+        y_title="% of days inside range",
+    )
+
+
+def baseline_pinball_figure(evaluation: dict[str, Any]) -> go.Figure:
+    """Build the model-vs-naive-baselines pinball loss comparison."""
+
+    losses = (
+        ("Dial In", evaluation.get("model_pinball"), GREEN),
+        ("Last week", evaluation.get("last_week_pinball"), INK),
+        ("4-week avg", evaluation.get("trailing_pinball"), GRAY),
+    )
+    fig = go.Figure()
+    plotted = [(label, value, color) for label, value, color in losses if value is not None]
+    if plotted:
+        fig.add_trace(
+            go.Bar(
+                x=[label for label, _, _ in plotted],
+                y=[float(value) for _, value, _ in plotted],
+                marker={"color": [color for _, _, color in plotted]},
+                hovertemplate="<b>%{x}</b><br>Pinball loss: %{y:.2f}<extra></extra>",
+                name="Pinball loss",
+            )
+        )
+    return finish_figure(
+        fig,
+        title="Forecast quality vs naive baselines",
+        height=280,
+        y_title="Pinball loss (lower is better)",
+    )
+
+
 def finish_figure(
     fig: go.Figure,
     title: str,

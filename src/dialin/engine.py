@@ -14,6 +14,31 @@ import pandas as pd
 
 MODEL_VERSION = "v1-demo-rules"
 
+# Demand uplift applied on sold-out days when fewer than 5 comparable uncensored
+# days exist. This is an assumption, not an estimate: it invents a 15% tail on
+# exactly the chronic-sellout days where the true ceiling was never observed
+# (PRD section 12), so any recommendation that leaned on it is forced to Low
+# confidence and flagged via TAIL_FALLBACK_RISK_FLAG.
+FALLBACK_DEMAND_UPLIFT = 1.15
+# Number of trailing calendar days in which a fallback-estimated row downgrades
+# the category's confidence.
+TAIL_FALLBACK_WINDOW_DAYS = 28
+TAIL_FALLBACK_RISK_FLAG = "Still learning your ceiling"
+
+# Negative Binomial dispersion controls. Larger dispersion means a tighter
+# distribution (variance approaches the mean); smaller means wider ranges.
+# SPARSE_HISTORY_DISPERSION applies with under 10 usable demand observations:
+# moderately wide ranges because we know little. LOW_VARIANCE_DISPERSION applies
+# when observed variance <= mean (the NB moment estimate is undefined there):
+# near-Poisson, fairly tight. The floor stops a few wild days from exploding the
+# range; the ceiling keeps the model from claiming near-certainty it has not
+# earned. These are demo-tuned values, not fitted parameters; the PRD 11.1 path
+# replaces them with per-bucket residual fits on real data.
+SPARSE_HISTORY_DISPERSION = 20.0
+LOW_VARIANCE_DISPERSION = 60.0
+DISPERSION_FLOOR = 3.0
+DISPERSION_CEILING = 80.0
+
 
 @dataclass(frozen=True)
 class RecommendationResult:
@@ -84,7 +109,10 @@ def build_recommendations(
         )
         censor_rate = float(category_history.tail(56)["sold_out"].mean())
         history_depth = int(category_history.shape[0])
+        tail_fallback_recent = _tail_fallback_recent(corrected, target_date)
         confidence = _confidence(history_depth, censor_rate, target_weather)
+        if tail_fallback_recent:
+            confidence = "Low"
         lower_q, upper_q = (0.05, 0.95) if confidence == "Low" else (0.1, 0.9)
         demand_p_lower = negative_binomial_quantile(demand_mean, dispersion, lower_q)
         demand_p50 = negative_binomial_quantile(demand_mean, dispersion, 0.5)
@@ -94,7 +122,10 @@ def build_recommendations(
             float(economics_row["service_quantile"]),
         )
         demand_p_upper = negative_binomial_quantile(demand_mean, dispersion, upper_q)
-        risk_flag = _risk_flag(recommended_prep, demand_p_upper, censor_rate)
+        if tail_fallback_recent:
+            risk_flag = TAIL_FALLBACK_RISK_FLAG
+        else:
+            risk_flag = _risk_flag(recommended_prep, demand_p_upper, censor_rate)
         drivers = _top_drivers(traffic_drivers, category, attach_rate, censor_rate)
         input_snapshot_id = stable_hash(
             {
@@ -105,6 +136,7 @@ def build_recommendations(
                 "dispersion": round(dispersion, 4),
                 "history_depth": history_depth,
                 "censor_rate": round(censor_rate, 4),
+                "tail_fallback_recent": tail_fallback_recent,
             }
         )
         config_snapshot_id = stable_hash(
@@ -148,6 +180,7 @@ def decensored_demand_series(
     ).copy()
     merged["weekday"] = pd.to_datetime(merged["date"]).dt.weekday
     merged["estimated_demand"] = merged["sold"].astype(float)
+    merged["tail_fallback"] = False
 
     for index, row in merged[merged["sold_out"] == True].iterrows():  # noqa: E712
         comparable = merged[
@@ -159,7 +192,8 @@ def decensored_demand_series(
             scale = float(row["drinks_sold"]) / float(comparable["drinks_sold"].median())
             estimate = float(comparable["sold"].median()) * scale
         else:
-            estimate = float(row["prepared"]) * 1.15
+            estimate = float(row["prepared"]) * FALLBACK_DEMAND_UPLIFT
+            merged.loc[index, "tail_fallback"] = True
         merged.loc[index, "estimated_demand"] = max(float(row["prepared"]), estimate)
     return merged
 
@@ -169,12 +203,14 @@ def estimate_dispersion(values: list[float], fallback_mean: float) -> float:
 
     clean = [float(value) for value in values if value >= 0]
     if len(clean) < 10:
-        return 20.0
+        return SPARSE_HISTORY_DISPERSION
     mean = max(float(pd.Series(clean).mean()), fallback_mean, 0.5)
     variance = float(pd.Series(clean).var(ddof=1))
     if variance <= mean:
-        return 60.0
-    return float(min(max(mean * mean / (variance - mean), 3.0), 80.0))
+        return LOW_VARIANCE_DISPERSION
+    return float(
+        min(max(mean * mean / (variance - mean), DISPERSION_FLOOR), DISPERSION_CEILING)
+    )
 
 
 def negative_binomial_quantile(mean: float, dispersion: float, quantile: float) -> int:
@@ -335,6 +371,16 @@ def _trailing_attach_rate(
     drinks = recent["drinks_sold_daily"].fillna(recent["drinks_sold"]).clip(lower=1)
     attach = float(recent["estimated_demand"].sum() / drinks.sum())
     return float(min(max(attach, 0.03), 0.8))
+
+
+def _tail_fallback_recent(corrected: pd.DataFrame, target_date: date) -> bool:
+    """Return whether the fabricated-tail fallback fired in the trailing window."""
+
+    if "tail_fallback" not in corrected.columns or corrected.empty:
+        return False
+    window_start = target_date - timedelta(days=TAIL_FALLBACK_WINDOW_DAYS)
+    recent = corrected[pd.to_datetime(corrected["date"]).dt.date >= window_start]
+    return bool(recent["tail_fallback"].any())
 
 
 def _confidence(history_depth: int, censor_rate: float, target_weather: dict[str, Any]) -> str:
