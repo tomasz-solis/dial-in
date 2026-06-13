@@ -39,6 +39,15 @@ LOW_VARIANCE_DISPERSION = 60.0
 DISPERSION_FLOOR = 3.0
 DISPERSION_CEILING = 80.0
 
+# A category that frequently sells out has an under-observed upper tail, so a flat
+# p90 band systematically under-covers true demand on high-demand days. Widen the
+# upper quantile as the trailing censoring rate rises (PRD section 12: "widen,
+# don't fake"), capped so the band never implies near-certainty. This only affects
+# the displayed demand range, not the recommended prep (which uses the economics
+# service quantile).
+UPPER_TAIL_CENSOR_WIDENING = 0.3
+MAX_UPPER_QUANTILE = 0.97
+
 
 @dataclass(frozen=True)
 class RecommendationResult:
@@ -114,6 +123,7 @@ def build_recommendations(
         if tail_fallback_recent:
             confidence = "Low"
         lower_q, upper_q = (0.05, 0.95) if confidence == "Low" else (0.1, 0.9)
+        upper_q = min(upper_q + censor_rate * UPPER_TAIL_CENSOR_WIDENING, MAX_UPPER_QUANTILE)
         demand_p_lower = negative_binomial_quantile(demand_mean, dispersion, lower_q)
         demand_p50 = negative_binomial_quantile(demand_mean, dispersion, 0.5)
         recommended_prep = negative_binomial_quantile(
