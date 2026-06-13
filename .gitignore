@@ -47,7 +47,6 @@ data/generated/*
 
 # EXCEPTION: Allow essential CSV files for Streamlit Cloud deployment
 !data/history.csv
-!data/processed/wine_features.csv
 
 # Models
 models/*.pkl
@@ -62,6 +61,9 @@ models/*.pth
 *.swp
 *.swo
 *~
+
+# Claude Code local tooling (launch config, local settings, scratch helpers)
+.claude/
 
 # OS
 .DS_Store
