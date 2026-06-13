@@ -142,19 +142,3 @@ def test_baseline_pinball_figure_skips_missing_losses() -> None:
     assert list(fig.data[0].x) == ["Dial In", "Last week"]
 
 
-def test_sellout_timing_figure_uses_single_bar_trace() -> None:
-    """Known sellout timing should render as a simple bar chart."""
-
-    frame = pd.DataFrame(
-        {
-            "category": ["Sweet"],
-            "minutes_before_close": [90],
-            "last_sale": ["11:30"],
-            "severity_color": [charts.RED],
-        }
-    )
-
-    fig = charts.sellout_timing_figure(frame)
-
-    assert len(fig.data) == 1
-    assert fig.data[0].type == "bar"

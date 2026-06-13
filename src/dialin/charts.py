@@ -202,33 +202,6 @@ def recommendation_vs_observed_figure(frame: pd.DataFrame) -> go.Figure:
     return finished
 
 
-def sellout_timing_figure(frame: pd.DataFrame) -> go.Figure:
-    """Build a timing chart for known sellouts before close."""
-
-    fig = go.Figure()
-    if not frame.empty:
-        fig.add_trace(
-            go.Bar(
-                x=frame["category"],
-                y=frame["minutes_before_close"],
-                marker={"color": frame["severity_color"]},
-                customdata=frame[["last_sale"]],
-                hovertemplate=(
-                    "<b>%{x}</b><br>"
-                    "Last sale: %{customdata[0]}<br>"
-                    "Minutes before close: %{y}<extra></extra>"
-                ),
-                name="Minutes before close",
-            )
-        )
-    return finish_figure(
-        fig,
-        title="Known sellout timing",
-        height=260,
-        y_title="Minutes before close",
-    )
-
-
 def calibration_coverage_figure(calibration: dict[str, Any]) -> go.Figure:
     """Build coverage-by-confidence bars against the stated target band."""
 
@@ -291,6 +264,34 @@ def baseline_pinball_figure(evaluation: dict[str, Any]) -> go.Figure:
         title="Forecast quality vs naive baselines",
         height=280,
         y_title="Pinball loss (lower is better)",
+    )
+
+
+def cost_comparison_figure(cost: dict[str, Any]) -> go.Figure:
+    """Build the expected mis-prep cost per open day: model vs naive-prep decisions."""
+
+    bars = (
+        ("Dial In", cost.get("model_cost_per_day"), GREEN),
+        ("Prep last week", cost.get("last_week_cost_per_day"), INK),
+        ("Prep 4-week avg", cost.get("trailing_cost_per_day"), GRAY),
+    )
+    fig = go.Figure()
+    plotted = [(label, value, color) for label, value, color in bars if value is not None]
+    if plotted:
+        fig.add_trace(
+            go.Bar(
+                x=[label for label, _, _ in plotted],
+                y=[float(value) for _, value, _ in plotted],
+                marker={"color": [color for _, _, color in plotted]},
+                hovertemplate="<b>%{x}</b><br>€%{y:.2f} per open day<extra></extra>",
+                name="Expected cost",
+            )
+        )
+    return finish_figure(
+        fig,
+        title="Expected mis-prep cost per day (lower is better)",
+        height=280,
+        y_title="Euro per open day",
     )
 
 

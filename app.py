@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -20,7 +21,56 @@ from dialin import ui_components as ui
 from dialin.config import Settings, load_settings
 from dialin.db import assert_not_owner_connection
 from dialin.demo_freshness import ensure_demo_data_fresh
-from dialin.metrics import calibration_coverage, evaluate_model_vs_baselines
+from dialin.demo_truth import load_truth_demand
+from dialin.formatting import (
+    format_adherence as _format_adherence,
+)
+from dialin.formatting import (
+    format_clock as _format_clock,
+)
+from dialin.formatting import (
+    format_driver as _format_driver,
+)
+from dialin.formatting import (
+    format_lift as _format_lift,
+)
+from dialin.formatting import (
+    format_minutes_before_close as _format_minutes_before_close,
+)
+from dialin.formatting import (
+    format_percent as _format_percent,
+)
+from dialin.formatting import (
+    format_service_window as _format_service_window,
+)
+from dialin.formatting import (
+    format_source_label as _format_source_label,
+)
+from dialin.formatting import (
+    format_timestamp as _format_timestamp,
+)
+from dialin.formatting import (
+    minutes_from_clock as _minutes_from_clock,
+)
+from dialin.formatting import (
+    season_label as _season_label,
+)
+from dialin.formatting import (
+    time_from_timestamp as _time_from_timestamp,
+)
+from dialin.formatting import (
+    time_value as _time_value,
+)
+from dialin.formatting import (
+    weekday_labels as _weekday_labels,
+)
+from dialin.metrics import (
+    calibration_coverage,
+    calibration_coverage_truth,
+    evaluate_against_truth,
+    evaluate_model_vs_baselines,
+    expected_misprep_cost,
+)
 from dialin.pos_import import (
     CategoryMapping,
     PosColumnMapping,
@@ -248,12 +298,31 @@ def _runtime_env_file() -> Path:
 
 
 def _load_runtime_settings() -> Settings:
-    """Load Streamlit settings with local app-role values taking precedence."""
+    """Load Streamlit settings, preferring a local env file then app secrets.
+
+    Locally the low-privilege values come from .env.local. On Streamlit Community
+    Cloud there is no env file, so the database URL and app role are read from the
+    Secrets manager instead.
+    """
 
     env_file = _runtime_env_file()
     if env_file.exists():
         load_dotenv(env_file, override=True)
+    _apply_secret_env(("DATABASE_URL", "APP_DATABASE_ROLE"))
     return load_settings(env_file)
+
+
+def _apply_secret_env(keys: tuple[str, ...]) -> None:
+    """Copy top-level Streamlit secrets into the environment when not already set."""
+
+    for key in keys:
+        if os.environ.get(key):
+            continue
+        try:
+            value = st.secrets[key]
+        except (KeyError, FileNotFoundError):
+            continue
+        os.environ[key] = str(value)
 
 
 def _init_cursor(latest_date: date, today: date) -> None:
@@ -380,7 +449,7 @@ def _render_recommendation_hero(
     weather = _weather_summary(context.get("weather"))
     event = _event_summary(context.get("events", []))
     service_window = _format_service_window(flow["hours"])
-    subtitle_parts = [target_date.strftime("%A, %b %-d"), service_window]
+    subtitle_parts = [f"{target_date.strftime('%A, %b')} {target_date.day}", service_window]
     if weather != "Seasonal normal":
         subtitle_parts.append(weather)
     if event != "No event logged":
@@ -464,10 +533,11 @@ def _render_context_cards(context: dict[str, Any], target_date: date) -> None:
 
     weather = context.get("weather")
     events = context.get("events", [])
+    season_caption = f"{target_date.strftime('%A, %B')} {target_date.day}"
     cards = [
         ("Weather", _weather_summary(weather), _weather_detail(weather)),
         ("Events", _event_summary(events), _event_detail(events)),
-        ("Season", _season_label(target_date), target_date.strftime("%A, %B %-d")),
+        ("Season", _season_label(target_date), season_caption),
     ]
     st.markdown(
         ui.card_grid(
@@ -507,7 +577,7 @@ def _render_scorecard_snapshot(card: dict[str, Any]) -> None:
 
 
 def _render_model_quality(database_url: str, account_id: str, location_id: str) -> None:
-    """Render calibration coverage and naive-baseline verdicts (PRD section 6.1)."""
+    """Render expected-cost, calibration, and baseline verdicts (PRD section 6.1/6.2)."""
 
     outcomes = fetch_recommendation_outcomes(database_url, account_id, location_id)
     matched = pd.DataFrame(outcomes)
@@ -518,10 +588,29 @@ def _render_model_quality(database_url: str, account_id: str, location_id: str) 
     ]
     if "input_source" in history.columns:
         history = history[history["input_source"] != "imputed"]
-    calibration = calibration_coverage(matched)
-    evaluation = evaluate_model_vs_baselines(matched, history)
+    economics = _economics_costs(database_url, account_id, location_id, matched)
 
     st.markdown("#### Is the model earning trust?")
+
+    cost = expected_misprep_cost(matched, history, economics, demand_col="sold")
+    _render_cost_cards(cost)
+    st.caption(
+        "These are modelled euros, not cash in the till. They estimate the money lost each open "
+        "day to over-prep (wasted food) and under-prep (missed sales + the drink that rides "
+        "along), comparing Dial In's prep against the cheaper of two simple same-weekday rules "
+        "(last week, or the 4-week average). Computed from your category economics on observed "
+        "sales, so sold-out days under-count missed sales — Dial In's edge here is a "
+        "conservative lower bound."
+    )
+    st.plotly_chart(
+        charts.cost_comparison_figure(cost),
+        width="stretch",
+        config=PLOTLY_CONFIG,
+        key="model_quality_cost",
+    )
+
+    calibration = calibration_coverage(matched)
+    evaluation = evaluate_model_vs_baselines(matched, history)
     st.markdown(
         ui.card_grid(
             (
@@ -545,9 +634,9 @@ def _render_model_quality(database_url: str, account_id: str, location_id: str) 
         unsafe_allow_html=True,
     )
     st.caption(
-        "Scored on uncensored days only: sold-out days hide true demand, so they can "
-        "neither confirm nor refute a forecast. Pinball loss is evaluated at each "
-        "recommendation's own service quantile."
+        "Calibration and pinball are scored on uncensored days only. Pinball against censored "
+        "sales is biased toward low point forecasts, so treat it as a floor, not the verdict — "
+        "the ground-truth panel below is the unbiased read."
     )
     quality_left, quality_right = st.columns(2, gap="large")
     with quality_left:
@@ -564,6 +653,157 @@ def _render_model_quality(database_url: str, account_id: str, location_id: str) 
             config=PLOTLY_CONFIG,
             key="model_quality_baselines",
         )
+
+    _render_truth_quality(matched, history, economics, account_id, location_id)
+
+
+def _economics_costs(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+    matched: pd.DataFrame,
+) -> dict[str, tuple[float, float]]:
+    """Return per-category (under_cost, over_cost) from effective category economics."""
+
+    as_of = pd.to_datetime(matched["date"]).max().date()
+    costs: dict[str, tuple[float, float]] = {}
+    for row in fetch_category_economics(database_url, account_id, location_id, as_of):
+        retail = float(row["retail_price"])
+        cogs = float(row["unit_cogs"])
+        salvage = float(row["salvage_share_default"])
+        under_cost = retail - cogs + float(row["attach_and_balk_rate"]) * float(
+            row["attached_drink_margin"]
+        )
+        over_cost = cogs * (1 - salvage)
+        if under_cost > 0 and over_cost > 0:
+            costs[str(row["category"])] = (under_cost, over_cost)
+    return costs
+
+
+def _render_cost_cards(cost: dict[str, Any]) -> None:
+    """Render the expected mis-prep cost comparison cards."""
+
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.proof_card(
+                    "Beats a simple prep rule?",
+                    _verdict_label(cost.get("beats_baselines")),
+                    _savings_caption(cost),
+                ),
+                ui.proof_card(
+                    "Dial In · lost to mis-prep",
+                    _eur_per_day(cost.get("model_cost_per_day")),
+                    "Modelled waste + missed sales per day.",
+                ),
+                ui.proof_card(
+                    "Simple rule · lost to mis-prep",
+                    _eur_per_day(cost.get("best_baseline_cost_per_day")),
+                    "Cheaper of last-week / 4-week same-weekday prep.",
+                ),
+            )
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _render_truth_quality(
+    matched: pd.DataFrame,
+    history: pd.DataFrame,
+    economics: dict[str, tuple[float, float]],
+    account_id: str,
+    location_id: str,
+) -> None:
+    """Render the demo-only evaluation against synthetic ground-truth demand."""
+
+    truth = load_truth_demand(account_id, location_id)
+    if truth is None:
+        return
+    mt = matched.copy()
+    mt["date"] = pd.to_datetime(mt["date"])
+    mt = mt.merge(truth, on=["date", "category"], how="inner")
+    if mt.empty:
+        return
+
+    coverage = calibration_coverage_truth(mt)
+    evaluation = evaluate_against_truth(mt, history)
+    cost = expected_misprep_cost(mt, history, economics, demand_col="true_demand")
+
+    st.markdown("#### Measured against synthetic ground truth (demo only)")
+    st.caption(
+        "Synthetic data has a known true demand on every day, including sold-out days, so this "
+        "is the unbiased read the observed metrics above cannot give. Real cafés have no truth "
+        "file, so this panel only appears in the demo."
+    )
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.proof_card(
+                    "Range coverage vs truth",
+                    _coverage_label(coverage),
+                    _truth_coverage_caption(coverage),
+                ),
+                ui.proof_card(
+                    "Beats last-week (truth)",
+                    _verdict_label(evaluation.get("beats_last_week")),
+                    _baseline_caption(evaluation, "last_week_pinball"),
+                ),
+                ui.proof_card(
+                    "Beats 4-week (truth)",
+                    _verdict_label(evaluation.get("beats_trailing")),
+                    _baseline_caption(evaluation, "trailing_pinball"),
+                ),
+            )
+        ),
+        unsafe_allow_html=True,
+    )
+    _render_cost_cards(cost)
+    truth_left, truth_right = st.columns(2, gap="large")
+    with truth_left:
+        st.plotly_chart(
+            charts.baseline_pinball_figure(evaluation),
+            width="stretch",
+            config=PLOTLY_CONFIG,
+            key="truth_quality_baselines",
+        )
+    with truth_right:
+        st.plotly_chart(
+            charts.cost_comparison_figure(cost),
+            width="stretch",
+            config=PLOTLY_CONFIG,
+            key="truth_quality_cost",
+        )
+
+
+def _truth_coverage_caption(coverage: dict[str, Any]) -> str:
+    """Return the ground-truth coverage caption (all days, no censoring exclusion)."""
+
+    return (
+        f"Target ~80% · {int(coverage.get('scored_rows', 0))} days scored against "
+        "true demand, censored or not."
+    )
+
+
+def _savings_caption(cost: dict[str, Any]) -> str:
+    """State how much less Dial In loses than the simple rule — a modelled estimate."""
+
+    savings = cost.get("savings_per_day_vs_best")
+    days = int(cost.get("dates") or 0)
+    if savings is None:
+        return "Modelled estimate, not cash."
+    if savings > 0:
+        return f"Loses €{float(savings):.2f}/day less over {days} days — modelled, not cash."
+    if savings < 0:
+        return f"Loses €{-float(savings):.2f}/day more than the simple rule."
+    return f"About even with the simple rule over {days} days."
+
+
+def _eur_per_day(value: Any) -> str:
+    """Format a euro-per-day amount for proof cards."""
+
+    if value is None:
+        return "Not enough data"
+    return f"€{float(value):.2f}/day"
 
 
 def _coverage_label(calibration: dict[str, Any]) -> str:
@@ -601,7 +841,8 @@ def _baseline_caption(evaluation: dict[str, Any], baseline_key: str) -> str:
     baseline = evaluation.get(baseline_key)
     if model is None or baseline is None:
         return "Needs matched recommendation and closeout history."
-    return f"Pinball loss {model:.2f} vs {baseline:.2f} · {evaluation['evaluated_rows']} days."
+    days = evaluation.get("evaluated_dates", evaluation.get("evaluated_rows"))
+    return f"Pinball loss {model:.2f} vs {baseline:.2f} · {days} days."
 
 
 def _render_accuracy_tab(database_url: str, account_id: str, location_id: str) -> None:
@@ -668,6 +909,11 @@ def _render_accuracy_tab(database_url: str, account_id: str, location_id: str) -
 
     with st.expander("Matched recommendation rows"):
         st.dataframe(_accuracy_display_rows(frame).tail(25), hide_index=True, width="stretch")
+
+    override_rows = _recent_override_rows(card["rows"])
+    if override_rows:
+        with st.expander("Recent overrides"):
+            st.dataframe(pd.DataFrame(override_rows), hide_index=True, width="stretch")
 
 
 def _render_service_flow_tab(
@@ -892,14 +1138,6 @@ def _render_event_setup(
         )
 
 
-def _prep_summary(rows: list[dict[str, Any]]) -> str:
-    """Return a compact prep summary for the command-center hero."""
-
-    return " · ".join(
-        f"{int(row['recommended_prep'])} {str(row['category']).title()}" for row in rows
-    )
-
-
 def _hero_prep_tiles(rows: list[dict[str, Any]]) -> str:
     """Return readable prep tiles for the Command Center hero."""
 
@@ -944,12 +1182,6 @@ def _weather_summary(weather: dict[str, Any] | None) -> str:
     condition = str(weather.get("condition", "unknown")).title()
     temp = float(weather.get("temp_forecast", 0.0))
     return f"{condition}, {temp:.0f}C"
-
-
-def _format_source_label(value: Any) -> str:
-    """Format source labels without title-case hyphen artifacts."""
-
-    return str(value).replace("-", " ").replace("_", " ").strip().capitalize()
 
 
 def _weather_detail(weather: dict[str, Any] | None) -> str:
@@ -1087,30 +1319,6 @@ def _render_sellout_snapshot(sellout_rows: list[dict[str, Any]]) -> None:
     )
 
 
-def _sellout_timing_frame(rows: list[dict[str, Any]], close_time: Any) -> pd.DataFrame:
-    """Return chart rows for known sellout timing relative to close."""
-
-    close_minutes = _minutes_from_clock(close_time)
-    if close_minutes is None:
-        return pd.DataFrame()
-
-    records: list[dict[str, Any]] = []
-    for row in rows:
-        sale_minutes = _minutes_from_clock(row.get("time_last_sale"))
-        if sale_minutes is None:
-            continue
-        minutes_before_close = close_minutes - sale_minutes
-        records.append(
-            {
-                "category": str(row["category"]).title(),
-                "minutes_before_close": minutes_before_close,
-                "last_sale": _format_clock(row.get("time_last_sale")),
-                "severity_color": _sellout_severity_color(minutes_before_close),
-            }
-        )
-    return pd.DataFrame.from_records(records)
-
-
 def _stockout_windows(rows: list[dict[str, Any]], close_time: Any) -> list[dict[str, Any]]:
     """Return known stockout windows for pressure-chart overlays."""
 
@@ -1130,16 +1338,6 @@ def _stockout_windows(rows: list[dict[str, Any]], close_time: Any) -> list[dict[
             }
         )
     return windows
-
-
-def _sellout_severity_color(minutes_before_close: int) -> str:
-    """Return a chart color for sellout timing severity."""
-
-    if minutes_before_close >= 90:
-        return charts.RED
-    if minutes_before_close >= 30:
-        return charts.MUTED
-    return charts.GREEN
 
 
 def _accuracy_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -1250,33 +1448,6 @@ def _recommendation_vs_observed_chart(frame: pd.DataFrame) -> go.Figure:
     return charts.recommendation_vs_observed_figure(frame)
 
 
-def _format_adherence(value: Any) -> str:
-    """Format recommendation attribution for charts and tables."""
-
-    if value is True:
-        return "Followed"
-    if value is False:
-        return "Overridden"
-    return "Unattributed"
-
-
-def _weekday_labels() -> tuple[str, ...]:
-    """Return weekday labels in Postgres weekday order."""
-
-    return ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-
-
-def _time_value(value: Any, fallback: time) -> time:
-    """Return a time value from database output or a fallback."""
-
-    if isinstance(value, time):
-        return value
-    if value is None or pd.isna(value):
-        return fallback
-    timestamp = pd.Timestamp(value)
-    return time(int(timestamp.hour), int(timestamp.minute))
-
-
 def _event_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Format event rows for the setup table."""
 
@@ -1291,80 +1462,6 @@ def _event_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
-
-
-def _render_recommendation(
-    database_url: str,
-    account_id: str,
-    location_id: str,
-    target_date: date,
-) -> None:
-    """Render the persisted recommendation set for the selected closeout date."""
-
-    rows = fetch_recommendations_for_date(database_url, account_id, location_id, target_date)
-    st.subheader("Next prep recommendation")
-    if not rows:
-        st.info(
-            f"No recommendation has been generated for {target_date} yet. "
-            "Submit the end-of-day numbers below."
-        )
-        return
-
-    st.write(f"Target date: **{target_date}**")
-    columns = st.columns(len(rows))
-    for column, row in zip(columns, rows, strict=False):
-        with column:
-            st.metric(str(row["category"]).title(), int(row["recommended_prep"]))
-            st.caption(
-                f"Demand range {row['demand_p_lower']}-{row['demand_p_upper']} · "
-                f"{row['confidence']} confidence"
-            )
-            st.write(str(row["risk_flag"]))
-
-    context = fetch_recommendation_context(database_url, account_id, location_id, target_date)
-    _render_context_panels(context, target_date)
-
-    with st.expander("Why"):
-        for row in rows:
-            st.write(f"**{str(row['category']).title()}**")
-            drivers = row["top_drivers"]
-            if isinstance(drivers, str):
-                drivers = json.loads(drivers)
-            for driver in drivers:
-                st.write(_format_driver(driver))
-
-
-def _render_intraday_demo(
-    database_url: str,
-    account_id: str,
-    location_id: str,
-    business_date: date,
-) -> None:
-    """Render the demo service-hours and daypart pressure panel."""
-
-    demo = fetch_intraday_demo(database_url, account_id, location_id, business_date)
-    hours = demo["hours"]
-    st.subheader("Service pressure")
-    st.caption("Synthetic daypart shape from daily history; not live POS intraday data.")
-    service_col, drinks_col = st.columns(2)
-    service_col.metric("Service window", _format_service_window(hours))
-    drinks_col.metric("Expected drinks", int(demo["expected_drinks"]))
-    st.caption(f"Traffic source: {demo['expected_source']}. Hours source: {hours['source']}.")
-
-    if not hours["is_open"]:
-        st.info("This date is marked closed in the current hours plan.")
-        return
-
-    curve = demo["curve"]
-    if curve:
-        curve_frame = pd.DataFrame(curve).set_index("time")
-        st.line_chart(curve_frame[["expected_drinks"]])
-
-    sellout_rows = _intraday_sellout_rows(demo["sellouts"], hours.get("close_time"))
-    if sellout_rows:
-        st.dataframe(pd.DataFrame(sellout_rows), hide_index=True, width="stretch")
-    else:
-        st.caption("No category sellout time recorded for this date.")
 
 
 def _render_entry(
@@ -1709,19 +1806,6 @@ def _render_recent_pos_imports(database_url: str, account_id: str, location_id: 
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
-def _render_workflow_tab(closeout_date: date, target_date: date) -> None:
-    """Render a compact operator workflow reference."""
-
-    st.subheader("Workflow")
-    st.caption(f"Close out {closeout_date}; review prep for {target_date}.")
-    st.dataframe(pd.DataFrame(_workflow_rows()), hide_index=True, width="stretch")
-    st.info(
-        "Most days only need the closeout counts. Use Setup when economics or "
-        "menu version changes, and use Performance when reviewing whether prior "
-        "recommendations were followed."
-    )
-
-
 def _render_economics_setup(
     database_url: str,
     account_id: str,
@@ -1830,31 +1914,6 @@ def _render_economics_setup(
                 )
             st.success("Economics saved for future recommendations.")
             st.rerun()
-
-
-def _render_scorecard(database_url: str, account_id: str, location_id: str) -> None:
-    """Render the observed-only replay comparison."""
-
-    card = scorecard(database_url, account_id, location_id)
-    st.subheader("How Dial In compares")
-    st.caption(
-        "Synthetic replay vs a simulated conservative gut-prepping baseline. "
-        "This is not a real counterfactual or validated operator impact."
-    )
-    col1, col2 = st.columns(2)
-    col1.metric("Actual waste proxy", int(card["actual_waste"]))
-    col2.metric("Dial In waste proxy", int(card["dialin_waste_proxy"]))
-    col3, col4 = st.columns(2)
-    col3.metric("Actual sellout rows", int(card["actual_sellouts"]))
-    col4.metric("Dial In short proxy", int(card["dialin_short_proxy"]))
-    col5, col6, col7 = st.columns(3)
-    col5.metric("Attributed rows", int(card["attributed_rows"]))
-    col6.metric("Followed", int(card["adhered_rows"]))
-    col7.metric("Overridden", int(card["overridden_rows"]))
-    override_rows = _recent_override_rows(card["rows"])
-    if override_rows:
-        with st.expander("Recent overrides"):
-            st.dataframe(pd.DataFrame(override_rows), hide_index=True, width="stretch")
 
 
 def _render_replay_controls(latest_date: date, today: date) -> None:
@@ -2011,17 +2070,6 @@ def _default_stockout_time(close_time: Any) -> time:
     return time(hour, minute)
 
 
-def _time_from_timestamp(value: Any) -> time | None:
-    """Return the local clock component from a timestamp-like value."""
-
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, time):
-        return value
-    timestamp = pd.Timestamp(value)
-    return time(int(timestamp.hour), int(timestamp.minute))
-
-
 def _pos_sales_defaults(frames: dict[str, pd.DataFrame], business_date: date) -> dict[str, int]:
     """Return imported POS category sales for a date when closeout rows are missing."""
 
@@ -2046,52 +2094,6 @@ def _render_correction_audit(database_url: str, account_id: str, location_id: st
             st.caption("No corrections recorded yet.")
             return
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-
-
-def _render_context_panels(context: dict[str, Any], target_date: date) -> None:
-    """Render weather, event, and season inputs for one recommendation date."""
-
-    weather_column, event_column, season_column = st.columns(3)
-    with weather_column:
-        _render_weather_panel(context.get("weather"))
-    with event_column:
-        _render_event_panel(context.get("events", []))
-    with season_column:
-        st.markdown("**Season**")
-        st.write(_season_label(target_date))
-        st.caption(target_date.strftime("%A, %B %-d"))
-
-
-def _render_weather_panel(weather: dict[str, Any] | None) -> None:
-    """Render the target-date weather forecast used by the engine."""
-
-    st.markdown("**Weather**")
-    if not weather:
-        st.write("Seasonal normal")
-        st.caption("No forecast row; confidence should be lower.")
-        return
-    condition = str(weather.get("condition", "unknown")).title()
-    temp = float(weather.get("temp_forecast", 0.0))
-    rain = float(weather.get("rain_forecast", 0.0))
-    st.write(f"{condition}, {temp:.0f}C")
-    st.caption(f"Rain {rain:.1f} mm · made {_format_timestamp(weather.get('forecast_made_at'))}")
-
-
-def _render_event_panel(events: Any) -> None:
-    """Render the strongest event input for the recommendation date."""
-
-    st.markdown("**Events**")
-    if not events:
-        st.write("None logged")
-        st.caption("No event lift applied.")
-        return
-    first = events[0]
-    impact = float(first.get("impact_score", 0.0))
-    st.write(str(first.get("event_name", "Local event")))
-    st.caption(
-        f"{str(first.get('event_type', 'event')).title()} · {_format_lift(1 + impact)} · "
-        f"{first.get('confidence', 'Unknown')} confidence"
-    )
 
 
 def _render_override_reason_select(
@@ -2279,93 +2281,6 @@ def _workflow_rows() -> list[dict[str, str]]:
     ]
 
 
-def _format_service_window(hours: dict[str, Any]) -> str:
-    """Format one hours row for the service-pressure panel."""
-
-    if not hours.get("is_open"):
-        return "Closed"
-    open_label = _format_clock(hours.get("open_time"))
-    close_label = _format_clock(hours.get("close_time"))
-    return f"{open_label}-{close_label}"
-
-
-def _format_driver(driver: dict[str, Any]) -> str:
-    """Format an engine driver as a readable lift instead of a raw multiplier."""
-
-    name = str(driver.get("name", "driver"))
-    multiplier = float(driver.get("multiplier", 1.0))
-    return f"{name}: {_format_lift(multiplier)}"
-
-
-def _format_lift(multiplier: float) -> str:
-    """Format a multiplier as a signed percentage lift."""
-
-    pct = round((multiplier - 1) * 100)
-    if pct > 0:
-        return f"+{pct}%"
-    if pct < 0:
-        return f"{pct}%"
-    return "neutral"
-
-
-def _format_percent(value: float) -> str:
-    """Format a ratio as a whole percentage."""
-
-    return f"{round(value * 100)}%"
-
-
-def _season_label(target_date: date) -> str:
-    """Return a compact tourism-season label for the demo calendar."""
-
-    if target_date.month in {6, 7, 8}:
-        return "High season"
-    if target_date.month in {3, 4, 5, 9, 10, 12}:
-        return "Mid season"
-    return "Low season"
-
-
-def _format_timestamp(value: Any) -> str:
-    """Format a timestamp-like value for compact Streamlit captions."""
-
-    if value is None or pd.isna(value):
-        return "unknown"
-    timestamp = pd.Timestamp(value)
-    return str(timestamp.strftime("%b %-d %H:%M"))
-
-
-def _format_clock(value: Any) -> str:
-    """Format a time-like value as HH:MM."""
-
-    minutes = _minutes_from_clock(value)
-    if minutes is None:
-        return "unknown"
-    hour, minute = divmod(minutes, 60)
-    return f"{hour:02d}:{minute:02d}"
-
-
-def _minutes_from_clock(value: Any) -> int | None:
-    """Convert a timestamp or time value into local minutes after midnight."""
-
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, time):
-        return value.hour * 60 + value.minute
-    timestamp = pd.Timestamp(value)
-    return int(timestamp.hour) * 60 + int(timestamp.minute)
-
-
-def _format_minutes_before_close(minutes: int | None) -> str:
-    """Format a sellout timing delta against close time."""
-
-    if minutes is None:
-        return "unknown"
-    if minutes < 0:
-        return f"{abs(minutes)} min after close"
-    if minutes == 0:
-        return "at close"
-    return f"{minutes} min before close"
-
-
 def _trailing_int_default(frame: pd.DataFrame, business_date: date, column: str) -> int:
     """Return a same-weekday trailing default for dates outside generated history."""
 
@@ -2391,249 +2306,8 @@ def _today_for_location(timezone_name: str) -> date:
 
 
 def _style() -> None:
-    """Apply the Dial In visual system for a clear operator dashboard."""
+    """Apply the Dial In visual system from the single shared stylesheet."""
 
-    st.markdown(
-        """
-        <style>
-        :root {
-            --di-ink: #111111;
-            --di-muted: #5f6673;
-            --di-line: #e4e7ec;
-            --di-paper: #ffffff;
-            --di-bg: #f4f6f8;
-            --di-mint: #83d7c0;
-            --di-green: #22a879;
-            --di-yellow: #f2c94c;
-        }
-        .stApp {
-            background:
-                linear-gradient(180deg, #ffffff 0%, var(--di-bg) 340px, var(--di-bg) 100%);
-            color: var(--di-ink);
-        }
-        .block-container {
-            max-width: 1180px;
-            padding-top: 1.25rem;
-            padding-bottom: 3rem;
-        }
-        h1, h2, h3, h4 {
-            letter-spacing: 0;
-        }
-        .di-topbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 1rem;
-            padding: 0.25rem 0 1.2rem;
-        }
-        .di-brand {
-            font-size: clamp(2rem, 4vw, 4.75rem);
-            line-height: 0.92;
-            font-weight: 900;
-            letter-spacing: 0;
-        }
-        .di-location {
-            margin-top: 0.35rem;
-            color: var(--di-muted);
-            font-size: 0.98rem;
-        }
-        .di-date-stack {
-            min-width: 190px;
-            border: 1px solid var(--di-line);
-            border-radius: 8px;
-            background: var(--di-paper);
-            padding: 0.8rem 0.95rem;
-            text-align: right;
-            box-shadow: 0 12px 28px rgba(17, 17, 17, 0.05);
-        }
-        .di-date-stack span {
-            display: block;
-            color: var(--di-muted);
-            font-size: 0.78rem;
-        }
-        .di-date-stack strong {
-            display: block;
-            margin-top: 0.15rem;
-            font-size: 0.95rem;
-        }
-        .di-hero {
-            position: relative;
-            overflow: hidden;
-            border: 1px solid #151515;
-            border-radius: 8px;
-            background:
-                radial-gradient(circle at 86% 12%, rgba(131, 215, 192, 0.58), transparent 30%),
-                linear-gradient(135deg, #111111 0%, #262626 72%, #1c3f37 100%);
-            color: #ffffff;
-            padding: clamp(1.4rem, 3vw, 2.4rem);
-            margin-bottom: 1rem;
-            box-shadow: 0 20px 46px rgba(17, 17, 17, 0.18);
-        }
-        .di-hero h1 {
-            margin: 0.2rem 0 0.5rem;
-            font-size: clamp(2rem, 5vw, 4.8rem);
-            line-height: 0.95;
-            font-weight: 900;
-            letter-spacing: 0;
-        }
-        .di-hero p {
-            max-width: 760px;
-            color: rgba(255, 255, 255, 0.82);
-            font-size: clamp(0.98rem, 1.6vw, 1.18rem);
-            margin: 0;
-        }
-        .di-eyebrow,
-        .di-card-label {
-            color: var(--di-muted);
-            font-size: 0.74rem;
-            font-weight: 800;
-            letter-spacing: 0;
-            text-transform: uppercase;
-        }
-        .di-hero .di-eyebrow {
-            color: var(--di-mint);
-        }
-        .di-hero-badges,
-        .di-chip-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.45rem;
-            margin-top: 1rem;
-        }
-        .di-hero-badges span,
-        .di-chip {
-            border-radius: 999px;
-            border: 1px solid rgba(17, 17, 17, 0.12);
-            background: #ffffff;
-            color: var(--di-ink);
-            padding: 0.28rem 0.55rem;
-            font-size: 0.76rem;
-            font-weight: 750;
-            white-space: nowrap;
-        }
-        .di-hero-badges span {
-            border-color: rgba(255, 255, 255, 0.18);
-            background: rgba(255, 255, 255, 0.12);
-            color: #ffffff;
-        }
-        .di-card,
-        div[data-testid="stMetric"] {
-            background: var(--di-paper);
-            border: 1px solid var(--di-line);
-            border-radius: 8px;
-            padding: 0.95rem;
-            box-shadow: 0 10px 24px rgba(17, 17, 17, 0.045);
-        }
-        .di-prep-card {
-            min-height: 178px;
-            margin-bottom: 1rem;
-        }
-        .di-card-value {
-            color: var(--di-ink);
-            font-size: 3.2rem;
-            line-height: 1;
-            font-weight: 900;
-            margin-top: 0.25rem;
-        }
-        .di-context-value {
-            color: var(--di-ink);
-            font-size: 1.25rem;
-            line-height: 1.15;
-            font-weight: 850;
-            margin-top: 0.35rem;
-        }
-        .di-card-caption {
-            color: var(--di-muted);
-            font-size: 0.83rem;
-            margin-top: 0.45rem;
-        }
-        .di-context-card,
-        .di-proof-card {
-            margin-bottom: 0.7rem;
-        }
-        .di-flow-card {
-            min-height: 128px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        }
-        .di-flow-value {
-            color: var(--di-ink);
-            font-size: clamp(2.1rem, 3vw, 3.35rem);
-            line-height: 1.02;
-            font-weight: 900;
-            margin-top: 0.35rem;
-            overflow-wrap: anywhere;
-            white-space: normal;
-        }
-        .di-flow-text {
-            font-size: clamp(1.45rem, 2.2vw, 2.5rem);
-            line-height: 1.08;
-        }
-        .di-hours-header {
-            min-height: 1.8rem;
-            color: var(--di-muted);
-            font-size: 0.74rem;
-            font-weight: 850;
-            text-transform: uppercase;
-        }
-        .di-hours-day {
-            min-height: 2.75rem;
-            display: flex;
-            align-items: center;
-            font-weight: 850;
-        }
-        div[data-testid="stMetric"] {
-            box-shadow: none;
-        }
-        div[data-testid="stMetricLabel"] {
-            color: var(--di-muted);
-        }
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 0.35rem;
-            border-bottom: 1px solid var(--di-line);
-        }
-        .stTabs [data-baseweb="tab"] {
-            border-radius: 8px 8px 0 0;
-            padding: 0.65rem 0.9rem;
-            color: var(--di-muted);
-        }
-        .stTabs [aria-selected="true"] {
-            background: #ffffff;
-            color: var(--di-ink);
-            font-weight: 800;
-        }
-        .stButton > button,
-        div[data-testid="stFormSubmitButton"] button {
-            border-radius: 8px;
-            border: 1px solid var(--di-ink);
-            background: var(--di-ink);
-            color: #ffffff;
-            font-weight: 800;
-        }
-        .stButton > button:hover,
-        div[data-testid="stFormSubmitButton"] button:hover {
-            border-color: var(--di-green);
-            background: var(--di-green);
-            color: #ffffff;
-        }
-        @media (max-width: 700px) {
-            .di-topbar {
-                align-items: flex-start;
-                flex-direction: column;
-            }
-            .di-date-stack {
-                width: 100%;
-                text-align: left;
-            }
-            .di-hero {
-                padding: 1.15rem;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
     st.markdown(ui.app_styles(), unsafe_allow_html=True)
 
 

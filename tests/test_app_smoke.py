@@ -11,6 +11,7 @@ import pytest
 import streamlit as st
 
 import app
+from dialin import formatting
 from dialin import ui_components as ui
 from dialin.pos_import import DailySalesRollup, PosImportError, PosImportPreview
 
@@ -127,23 +128,23 @@ def test_app_header_html_tolerates_stale_ui_module(monkeypatch: pytest.MonkeyPat
 def test_driver_lift_formatting_is_readable() -> None:
     """Driver text should show direction and lift, not raw multipliers."""
 
-    assert app._format_driver({"name": "weather", "multiplier": 1.18}) == "weather: +18%"
-    assert app._format_driver({"name": "rain", "multiplier": 0.94}) == "rain: -6%"
-    assert app._format_driver({"name": "event", "multiplier": 1.0}) == "event: neutral"
+    assert formatting.format_driver({"name": "weather", "multiplier": 1.18}) == "weather: +18%"
+    assert formatting.format_driver({"name": "rain", "multiplier": 0.94}) == "rain: -6%"
+    assert formatting.format_driver({"name": "event", "multiplier": 1.0}) == "event: neutral"
 
 
 def test_percent_formatting_is_compact() -> None:
     """Service-level ratios should read as whole percentages."""
 
-    assert app._format_percent(0.7805) == "78%"
+    assert formatting.format_percent(0.7805) == "78%"
 
 
 def test_season_label_uses_demo_tourism_bands() -> None:
     """Season labels should be stable for the compact recommendation context panel."""
 
-    assert app._season_label(date(2026, 7, 10)) == "High season"
-    assert app._season_label(date(2026, 10, 10)) == "Mid season"
-    assert app._season_label(date(2026, 1, 10)) == "Low season"
+    assert formatting.season_label(date(2026, 7, 10)) == "High season"
+    assert formatting.season_label(date(2026, 10, 10)) == "Mid season"
+    assert formatting.season_label(date(2026, 1, 10)) == "Low season"
 
 
 def test_hero_prep_tiles_keep_categories_separate() -> None:
@@ -212,12 +213,12 @@ def test_service_window_formatting_handles_open_and_closed_days() -> None:
     """Service windows should read cleanly in the intraday panel."""
 
     assert (
-        app._format_service_window(
+        formatting.format_service_window(
             {"is_open": True, "open_time": time(8, 0), "close_time": time(16, 0)}
         )
         == "08:00-16:00"
     )
-    assert app._format_service_window({"is_open": False}) == "Closed"
+    assert formatting.format_service_window({"is_open": False}) == "Closed"
 
 
 def test_intraday_sellout_rows_show_time_before_close() -> None:
@@ -235,27 +236,6 @@ def test_intraday_sellout_rows_show_time_before_close() -> None:
             "prepared": 42,
             "last sale": "13:30",
             "before close": "150 min before close",
-        }
-    ]
-
-
-def test_sellout_timing_frame_skips_missing_timestamps() -> None:
-    """Sellout timing charts should use only explicit last-sale evidence."""
-
-    frame = app._sellout_timing_frame(
-        [
-            {"category": "sweet", "time_last_sale": time(11, 30)},
-            {"category": "savory", "time_last_sale": None},
-        ],
-        time(13, 0),
-    )
-
-    assert frame.to_dict("records") == [
-        {
-            "category": "Sweet",
-            "minutes_before_close": 90,
-            "last_sale": "11:30",
-            "severity_color": "#d24b3f",
         }
     ]
 
@@ -447,7 +427,7 @@ def test_default_stockout_time_uses_near_close() -> None:
 def test_source_label_removes_hyphenated_title_case() -> None:
     """Traffic source labels should wrap as plain text in metric cards."""
 
-    assert app._format_source_label("same-weekday history") == "Same weekday history"
+    assert formatting.format_source_label("same-weekday history") == "Same weekday history"
 
 
 def test_resolved_stockout_time_requires_both_evidence_flags() -> None:
