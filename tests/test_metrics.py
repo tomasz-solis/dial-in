@@ -9,10 +9,22 @@ import pytest
 
 from dialin.metrics import (
     calibration_coverage,
+    calibration_coverage_truth,
+    evaluate_against_truth,
     evaluate_model_vs_baselines,
+    expected_misprep_cost,
     naive_baseline_forecasts,
     pinball_loss,
 )
+
+
+def _weekly_sweet_history() -> pd.DataFrame:
+    """Six same-weekday sweet rows so 7-day-lag baselines resolve on the last two."""
+
+    dates = pd.date_range("2026-01-03", periods=6, freq="7D").date
+    return pd.DataFrame(
+        {"date": dates, "category": ["sweet"] * 6, "sold": [40, 42, 44, 46, 48, 50]}
+    )
 
 
 def test_pinball_loss_matches_hand_computed_values() -> None:
@@ -158,3 +170,86 @@ def test_calibration_coverage_handles_empty_and_fully_censored_input() -> None:
     )
     assert censored["coverage"] is None
     assert censored["censored_share"] == pytest.approx(1.0)
+
+
+def test_evaluate_against_truth_scores_all_days() -> None:
+    """The ground-truth lens scores sold-out days too, against true demand."""
+
+    history = _weekly_sweet_history()
+    dates = pd.date_range("2026-01-03", periods=6, freq="7D").date
+    matched = pd.DataFrame(
+        {
+            "date": [dates[4], dates[5]],
+            "category": ["sweet", "sweet"],
+            "recommended_prep": [55, 58],
+            "service_quantile": [0.78, 0.78],
+            "true_demand": [55, 58],
+            "sold_out": [False, True],
+        }
+    )
+
+    evaluation = evaluate_against_truth(matched, history)
+
+    # both days scored (the sold-out day is not excluded), and the model is exact
+    assert evaluation["evaluated_rows"] == 2
+    assert evaluation["model_pinball"] == pytest.approx(0.0)
+    assert evaluation["beats_baselines"] is True
+
+
+def test_calibration_coverage_truth_includes_sold_out_days() -> None:
+    """Ground-truth coverage spans every day, censored or not."""
+
+    matched = pd.DataFrame(
+        {
+            "date": [date(2026, 1, day) for day in (1, 2, 3)],
+            "category": ["sweet"] * 3,
+            "true_demand": [30, 33, 70],
+            "sold_out": [False, False, True],
+            "demand_p_lower": [28, 28, 28],
+            "demand_p_upper": [36, 36, 36],
+            "confidence": ["High", "High", "High"],
+        }
+    )
+
+    coverage = calibration_coverage_truth(matched)
+
+    assert coverage["scored_rows"] == 3
+    assert coverage["coverage"] == pytest.approx(2 / 3, abs=1e-4)
+
+
+def test_expected_misprep_cost_prefers_the_quantile_buffer() -> None:
+    """When stockouts cost more than waste, a higher prep loses less money."""
+
+    history = _weekly_sweet_history()
+    dates = pd.date_range("2026-01-03", periods=6, freq="7D").date
+    matched = pd.DataFrame(
+        {
+            "date": [dates[4], dates[5]],
+            "category": ["sweet", "sweet"],
+            "recommended_prep": [50, 52],
+            "service_quantile": [0.78, 0.78],
+            "true_demand": [55, 58],
+            "sold_out": [True, True],
+        }
+    )
+    economics = {"sweet": (3.2, 0.9)}  # (under_cost, over_cost)
+
+    cost = expected_misprep_cost(matched, history, economics, demand_col="true_demand")
+
+    # model: 3.2*5 + 3.2*6 = 35.2 over 2 days -> 17.6/day
+    assert cost["dates"] == 2
+    assert cost["demand_basis"] == "true_demand"
+    assert cost["model_cost_per_day"] == pytest.approx(17.6)
+    # last-week prep ceil(46),ceil(48): 3.2*9 + 3.2*10 = 60.8 -> 30.4/day
+    assert cost["last_week_cost_per_day"] == pytest.approx(30.4)
+    assert cost["best_baseline_cost_per_day"] == pytest.approx(30.4)
+    assert cost["savings_per_day_vs_best"] == pytest.approx(12.8)
+    assert cost["beats_baselines"] is True
+
+
+def test_expected_misprep_cost_handles_empty_inputs() -> None:
+    """Empty matched data or missing economics must not crash."""
+
+    empty = expected_misprep_cost(pd.DataFrame(), _weekly_sweet_history(), {}, demand_col="sold")
+    assert empty["beats_baselines"] is None
+    assert empty["model_cost_per_day"] is None

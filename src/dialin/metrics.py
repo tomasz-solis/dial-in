@@ -1,14 +1,25 @@
-"""Honest model-quality metrics: pinball loss, naive baselines, and calibration.
+"""Honest model-quality metrics: pinball loss, naive baselines, calibration,
+and expected mis-prep cost.
 
-These implement the PRD section 6.1 evaluation contract: the model is judged on
-quantile (pinball) loss against two naive baselines and on whether its stated
-demand range is calibrated. All evaluation uses uncensored days only, because on
-sold-out days true demand is unknown; the censored share is always reported
-alongside the result instead of being hidden.
+These implement the PRD section 6.1/6.2 evaluation contract. Two evaluation
+lenses are provided on purpose:
+
+* **Observed (production) lens** — scores against censored ``sold`` on uncensored
+  days only, because on sold-out days true demand is unknown. Pinball loss on a
+  censored sample is biased toward low point forecasts, so the honest headline
+  for the observed lens is **expected mis-prep cost** (a decision-vs-decision
+  money comparison), not pinball.
+* **Ground-truth (demo) lens** — only possible with synthetic data, scores
+  against ``true_demand`` on every day. This removes the censoring bias and
+  shows the model's real skill.
+
+The censored share is always reported alongside the observed lens rather than
+hidden.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pandas as pd
@@ -64,20 +75,50 @@ def naive_baseline_forecasts(category_frame: pd.DataFrame) -> pd.DataFrame:
     return frame[["date", "category", "last_week_sold", "trailing_4wk_sold"]]
 
 
-def evaluate_model_vs_baselines(
+def _with_baselines(
     matched: pd.DataFrame,
     category_history: pd.DataFrame,
-) -> dict[str, Any]:
-    """Score the model against both naive baselines on held-out pinball loss.
+    *,
+    exclude_censored: bool,
+) -> tuple[pd.DataFrame, int, int]:
+    """Merge naive baselines onto matched rows and return (frame, censored, total)."""
 
-    ``matched`` needs date, category, recommended_prep, service_quantile, sold,
-    and sold_out columns (one row per recommendation with an observed closeout).
-    ``category_history`` is the raw daily_category_metrics history used to build
-    the baselines. Only uncensored rows with available baselines are scored.
-    """
+    frame = matched.copy()
+    frame["date"] = pd.to_datetime(frame["date"])
+    total = len(frame)
+    censored = int(frame["sold_out"].astype(bool).sum()) if "sold_out" in frame else 0
+    if exclude_censored and "sold_out" in frame:
+        frame = frame[~frame["sold_out"].astype(bool)]
+    baselines = naive_baseline_forecasts(category_history)
+    frame = frame.merge(baselines, on=["date", "category"], how="left")
+    frame = frame.dropna(subset=["last_week_sold", "trailing_4wk_sold"])
+    return frame, censored, total
+
+
+def _mean_pinball(frame: pd.DataFrame, forecast_col: str, target_col: str) -> float:
+    """Mean pinball loss of one forecast column against a target at each row's quantile."""
+
+    losses = [
+        pinball_loss(
+            float(row[target_col]), float(row[forecast_col]), float(row["service_quantile"])
+        )
+        for _, row in frame.iterrows()
+    ]
+    return sum(losses) / len(losses)
+
+
+def _evaluate(
+    matched: pd.DataFrame,
+    category_history: pd.DataFrame,
+    *,
+    target: str,
+    exclude_censored: bool,
+) -> dict[str, Any]:
+    """Score the model against both naive baselines on pinball loss."""
 
     empty: dict[str, Any] = {
         "evaluated_rows": 0,
+        "evaluated_dates": 0,
         "censored_rows": 0,
         "censored_share": 0.0,
         "model_pinball": None,
@@ -90,37 +131,22 @@ def evaluate_model_vs_baselines(
     if matched.empty:
         return empty
 
-    frame = matched.copy()
-    frame["date"] = pd.to_datetime(frame["date"])
-    censored_rows = int(frame["sold_out"].astype(bool).sum())
-    censored_share = censored_rows / len(frame)
-    frame = frame[~frame["sold_out"].astype(bool)]
-
-    baselines = naive_baseline_forecasts(category_history)
-    frame = frame.merge(baselines, on=["date", "category"], how="left")
-    frame = frame.dropna(subset=["last_week_sold", "trailing_4wk_sold"])
+    frame, censored, total = _with_baselines(
+        matched, category_history, exclude_censored=exclude_censored
+    )
+    censored_share = censored / total if total else 0.0
     if frame.empty:
-        empty["censored_rows"] = censored_rows
+        empty["censored_rows"] = censored
         empty["censored_share"] = round(censored_share, 4)
         return empty
 
-    def mean_loss(forecast_column: str) -> float:
-        losses = [
-            pinball_loss(
-                float(row["sold"]),
-                float(row[forecast_column]),
-                float(row["service_quantile"]),
-            )
-            for _, row in frame.iterrows()
-        ]
-        return sum(losses) / len(losses)
-
-    model = mean_loss("recommended_prep")
-    last_week = mean_loss("last_week_sold")
-    trailing = mean_loss("trailing_4wk_sold")
+    model = _mean_pinball(frame, "recommended_prep", target)
+    last_week = _mean_pinball(frame, "last_week_sold", target)
+    trailing = _mean_pinball(frame, "trailing_4wk_sold", target)
     return {
         "evaluated_rows": len(frame),
-        "censored_rows": censored_rows,
+        "evaluated_dates": int(frame["date"].nunique()),
+        "censored_rows": censored,
         "censored_share": round(censored_share, 4),
         "model_pinball": round(model, 4),
         "last_week_pinball": round(last_week, 4),
@@ -131,37 +157,56 @@ def evaluate_model_vs_baselines(
     }
 
 
-def calibration_coverage(matched: pd.DataFrame) -> dict[str, Any]:
-    """Return how often the stated demand range contained realised sales.
+def evaluate_model_vs_baselines(
+    matched: pd.DataFrame,
+    category_history: pd.DataFrame,
+) -> dict[str, Any]:
+    """Observed lens: pinball vs censored ``sold`` on uncensored days only.
 
-    Coverage is computed on uncensored rows only: on a sold-out day the true
-    demand is at least ``prepared`` but otherwise unknown, so it can neither
-    confirm nor refute the range. The censored share is reported so the
-    exclusion is visible rather than silent.
+    ``matched`` needs date, category, recommended_prep, service_quantile, sold,
+    and sold_out columns. Only uncensored rows with available baselines are
+    scored. See module docstring for why expected cost is the better headline.
     """
 
+    return _evaluate(matched, category_history, target="sold", exclude_censored=True)
+
+
+def evaluate_against_truth(
+    matched: pd.DataFrame,
+    category_history: pd.DataFrame,
+) -> dict[str, Any]:
+    """Ground-truth (demo) lens: pinball vs ``true_demand`` on every day.
+
+    ``matched`` needs a ``true_demand`` column. No censoring exclusion applies
+    because true demand is observable on sold-out days in synthetic data.
+    """
+
+    return _evaluate(matched, category_history, target="true_demand", exclude_censored=False)
+
+
+def _coverage(matched: pd.DataFrame, *, target: str, exclude_censored: bool) -> dict[str, Any]:
+    """Return how often the stated demand range contained the target demand."""
+
+    base: dict[str, Any] = {
+        "scored_rows": 0,
+        "censored_rows": 0,
+        "censored_share": 0.0,
+        "coverage": None,
+        "by_confidence": {},
+    }
     if matched.empty:
-        return {
-            "uncensored_rows": 0,
-            "censored_rows": 0,
-            "censored_share": 0.0,
-            "coverage": None,
-            "by_confidence": {},
-        }
+        return base
     frame = matched.copy()
-    censored_rows = int(frame["sold_out"].astype(bool).sum())
-    censored_share = censored_rows / len(frame)
-    frame = frame[~frame["sold_out"].astype(bool)].copy()
+    total = len(frame)
+    censored = int(frame["sold_out"].astype(bool).sum()) if "sold_out" in frame else 0
+    if exclude_censored and "sold_out" in frame:
+        frame = frame[~frame["sold_out"].astype(bool)].copy()
+    base["censored_rows"] = censored
+    base["censored_share"] = round(censored / total, 4) if total else 0.0
     if frame.empty:
-        return {
-            "uncensored_rows": 0,
-            "censored_rows": censored_rows,
-            "censored_share": round(censored_share, 4),
-            "coverage": None,
-            "by_confidence": {},
-        }
-    frame["covered"] = (frame["sold"] >= frame["demand_p_lower"]) & (
-        frame["sold"] <= frame["demand_p_upper"]
+        return base
+    frame["covered"] = (frame[target] >= frame["demand_p_lower"]) & (
+        frame[target] <= frame["demand_p_upper"]
     )
     by_confidence: dict[str, dict[str, Any]] = {}
     for label, group in frame.groupby("confidence"):
@@ -169,10 +214,94 @@ def calibration_coverage(matched: pd.DataFrame) -> dict[str, Any]:
             "rows": len(group),
             "coverage": round(float(group["covered"].mean()), 4),
         }
+    base["scored_rows"] = len(frame)
+    base["coverage"] = round(float(frame["covered"].mean()), 4)
+    base["by_confidence"] = by_confidence
+    return base
+
+
+def calibration_coverage(matched: pd.DataFrame) -> dict[str, Any]:
+    """Observed lens coverage: target ``sold`` on uncensored rows only.
+
+    Censored days are excluded (true demand unknown) and their share reported.
+    """
+
+    result = _coverage(matched, target="sold", exclude_censored=True)
+    # legacy key name kept for existing callers/tests
+    result["uncensored_rows"] = result["scored_rows"]
+    return result
+
+
+def calibration_coverage_truth(matched: pd.DataFrame) -> dict[str, Any]:
+    """Ground-truth (demo) coverage: target ``true_demand`` on every day."""
+
+    return _coverage(matched, target="true_demand", exclude_censored=False)
+
+
+def expected_misprep_cost(
+    matched: pd.DataFrame,
+    category_history: pd.DataFrame,
+    economics: dict[str, tuple[float, float]],
+    *,
+    demand_col: str,
+) -> dict[str, Any]:
+    """Compare prep *decisions* by expected mis-prep cost (PRD section 6.2).
+
+    For each row and method the cost is
+    ``Co * max(prep - demand, 0) + Cu * max(demand - prep, 0)`` where ``(Cu, Co)``
+    come from ``economics`` per category. This compares prep quantities directly
+    in money, so it sidesteps the quantile mismatch that makes pinball unfair to
+    a newsvendor forecaster. Baselines are turned into real prep decisions by
+    rounding their point forecast up.
+
+    With ``demand_col="sold"`` (observed lens) the cost on sold-out days uses
+    censored sales, which *under*-counts stockout cost, so the model's reported
+    advantage is a conservative lower bound. With ``demand_col="true_demand"``
+    (demo lens) it is exact.
+    """
+
+    empty: dict[str, Any] = {
+        "rows": 0,
+        "dates": 0,
+        "demand_basis": demand_col,
+        "model_cost_per_day": None,
+        "last_week_cost_per_day": None,
+        "trailing_cost_per_day": None,
+        "best_baseline_cost_per_day": None,
+        "savings_per_day_vs_best": None,
+        "beats_baselines": None,
+    }
+    if matched.empty or not economics:
+        return empty
+    frame, _, _ = _with_baselines(matched, category_history, exclude_censored=False)
+    frame = frame[frame["category"].isin(economics)]
+    frame = frame.dropna(subset=[demand_col])
+    if frame.empty:
+        return empty
+
+    def row_cost(prep: float, demand: float, category: str) -> float:
+        under_cost, over_cost = economics[category]
+        return over_cost * max(prep - demand, 0.0) + under_cost * max(demand - prep, 0.0)
+
+    totals = {"model": 0.0, "last_week": 0.0, "trailing": 0.0}
+    for _, row in frame.iterrows():
+        category = str(row["category"])
+        demand = float(row[demand_col])
+        totals["model"] += row_cost(float(row["recommended_prep"]), demand, category)
+        totals["last_week"] += row_cost(math.ceil(float(row["last_week_sold"])), demand, category)
+        totals["trailing"] += row_cost(math.ceil(float(row["trailing_4wk_sold"])), demand, category)
+
+    n_dates = int(frame["date"].nunique())
+    per_day = {key: value / n_dates for key, value in totals.items()}
+    best_baseline = min(per_day["last_week"], per_day["trailing"])
     return {
-        "uncensored_rows": len(frame),
-        "censored_rows": censored_rows,
-        "censored_share": round(censored_share, 4),
-        "coverage": round(float(frame["covered"].mean()), 4),
-        "by_confidence": by_confidence,
+        "rows": len(frame),
+        "dates": n_dates,
+        "demand_basis": demand_col,
+        "model_cost_per_day": round(per_day["model"], 2),
+        "last_week_cost_per_day": round(per_day["last_week"], 2),
+        "trailing_cost_per_day": round(per_day["trailing"], 2),
+        "best_baseline_cost_per_day": round(best_baseline, 2),
+        "savings_per_day_vs_best": round(best_baseline - per_day["model"], 2),
+        "beats_baselines": per_day["model"] < best_baseline,
     }
