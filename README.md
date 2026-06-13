@@ -62,6 +62,30 @@ The seeded demo accounts are:
 - `acct_fadri`: Fadri (fictionalized), Cambrils, Tarragona
 - `acct_dummy`: Station House Demo
 
+## Keeping the demo fresh
+
+The synthetic data has a finite timeline, so it would otherwise look stale a few days
+after it is generated. The app self-heals on load: `ensure_demo_data_fresh` extends the
+synthetic history up to the current date and regenerates recent recommendations whenever
+a session starts, so a shared link is current whenever someone opens it.
+
+To pre-warm that work (so the first visitor does not wait) or to keep a deployed demo
+current even when nobody has opened it, run the refresh script. It is idempotent — it only
+appends missing days and re-generates recent recommendations, never overwriting real
+entries.
+
+```bash
+uv run python scripts/refresh_demo_data.py
+uv run python scripts/refresh_demo_data.py --today 2026-06-20   # treat a chosen date as today
+```
+
+It uses `DATABASE_URL` (the low-privilege `dialin_app` role is sufficient; row-level
+security is satisfied because each write is scoped to its tenant). Stop the running app
+before invoking it if `uv` needs to re-sync the environment, since a running process locks
+the virtualenv on Windows. For a hosted demo with no built-in scheduler (e.g. Streamlit
+Community Cloud), run it on a schedule from elsewhere — Windows Task Scheduler, macOS
+`launchd`/cron, or a daily GitHub Action with `DATABASE_URL` set as a secret.
+
 ## Checks
 
 ```bash

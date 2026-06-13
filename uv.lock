@@ -267,6 +267,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "streamlit" },
     { name = "streamlit-authenticator" },
+    { name = "tzdata" },
 ]
 
 [package.dev-dependencies]
@@ -286,6 +287,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "streamlit", specifier = ">=1.35" },
     { name = "streamlit-authenticator", specifier = ">=0.3" },
+    { name = "tzdata", specifier = ">=2024.1" },
 ]
 
 [package.metadata.requires-dev]
