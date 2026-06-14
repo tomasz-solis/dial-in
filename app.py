@@ -16,12 +16,10 @@ from dotenv import load_dotenv
 from dialin import ui_components as ui
 from dialin import views
 from dialin.config import Settings, load_settings
-from dialin.db import assert_not_owner_connection
 from dialin.demo_freshness import ensure_demo_data_fresh
 from dialin.streamlit_cache import (
+    app_bootstrap,
     clear_cached_reads,
-    latest_business_date,
-    list_locations,
 )
 
 VIEW_LABELS = ("Today", "Close out", "How it's doing", "Service", "Setup")
@@ -38,28 +36,37 @@ def main() -> None:
         return
 
     settings = _load_runtime_settings()
+    account_id = auth_context["account_id"]
     try:
-        assert_not_owner_connection(settings.database_url, settings.app_database_role)
+        bootstrap = app_bootstrap(
+            settings.database_url,
+            account_id,
+            settings.app_database_role,
+        )
     except Exception as exc:
         st.error(str(exc))
         st.stop()
 
-    account_id = auth_context["account_id"]
-    locations = list_locations(settings.database_url, account_id)
+    locations = bootstrap["locations"]
     if not locations:
         st.error("No locations are available for this account.")
         st.stop()
 
     location = locations[0]
     today = _today_for_location(str(location["timezone"]))
-    _ensure_demo_freshness_once(
+    if _ensure_demo_freshness_once(
         database_url=settings.database_url,
         account_id=account_id,
         location_id=str(location["location_id"]),
         today=today,
-    )
+    ):
+        bootstrap = app_bootstrap(
+            settings.database_url,
+            account_id,
+            settings.app_database_role,
+        )
 
-    latest_date = latest_business_date(settings.database_url, account_id, location["location_id"])
+    latest_date = bootstrap["latest_date"]
     if latest_date is None:
         st.error("No synthetic history has been loaded yet.")
         st.stop()
@@ -129,15 +136,15 @@ def _ensure_demo_freshness_once(
     account_id: str,
     location_id: str,
     today: date,
-) -> None:
+) -> bool:
     """Run opt-in demo data freshness once per tenant/location/day in a session."""
 
     if not _demo_refresh_on_load_enabled():
-        return
+        return False
 
     session_key = f"demo_freshness:{account_id}:{location_id}:{today.isoformat()}"
     if st.session_state.get(session_key) is True:
-        return
+        return False
     try:
         result = ensure_demo_data_fresh(
             database_url=database_url,
@@ -147,10 +154,11 @@ def _ensure_demo_freshness_once(
         )
     except Exception as exc:
         st.warning(f"Demo data refresh failed, so the app is using loaded data only: {exc}")
-        return
+        return False
     if result.changed:
         clear_cached_reads()
     st.session_state[session_key] = True
+    return result.changed
 
 
 def _demo_refresh_on_load_enabled() -> bool:

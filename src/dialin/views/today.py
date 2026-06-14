@@ -18,9 +18,7 @@ from dialin.formatting import (
     season_label,
 )
 from dialin.streamlit_cache import (
-    fetch_intraday_demo,
-    fetch_recommendation_context,
-    fetch_recommendations_for_date,
+    fetch_today_payload,
 )
 
 
@@ -34,14 +32,10 @@ def render(
     """Render the main daily decision view for the operator."""
 
     location_id = str(location["location_id"])
-    recommendation_rows = fetch_recommendations_for_date(
-        database_url,
-        account_id,
-        location_id,
-        target_date,
-    )
-    context = fetch_recommendation_context(database_url, account_id, location_id, target_date)
-    flow = fetch_intraday_demo(database_url, account_id, location_id, target_date)
+    payload = fetch_today_payload(database_url, account_id, location_id, target_date)
+    recommendation_rows = payload["recommendations"]
+    context = payload["context"]
+    flow = payload["flow"]
 
     if not recommendation_rows:
         st.info(
