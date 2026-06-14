@@ -95,6 +95,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "wind",
         "condition",
         "forecast_made_at",
+        "actual_observed_at",
     ),
     "events": (
         "account_id",
@@ -118,6 +119,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "service_quantile",
         "effective_from",
         "effective_to",
+        "values_source",
     ),
 }
 
@@ -194,6 +196,8 @@ def read_observed_frames(observed_dir: Path) -> dict[str, pd.DataFrame]:
             raise FileNotFoundError(f"missing observed table: {path}")
         frame = pd.read_parquet(path)
         ensure_no_truth_columns(frame, table_name)
+        if table_name == "category_economics" and "values_source" not in frame.columns:
+            frame["values_source"] = "default"
         _check_columns(frame, table_name, TABLE_COLUMNS[table_name])
         frames[table_name] = frame
 

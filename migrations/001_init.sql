@@ -1,5 +1,11 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    filename text PRIMARY KEY,
+    checksum text NOT NULL,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS accounts (
     account_id text PRIMARY KEY,
     name text NOT NULL,
@@ -102,12 +108,13 @@ CREATE TABLE IF NOT EXISTS weather (
     location_id text NOT NULL,
     date date NOT NULL,
     temp_forecast numeric(6, 2) NOT NULL,
-    temp_actual numeric(6, 2) NOT NULL,
+    temp_actual numeric(6, 2),
     rain_forecast numeric(8, 2) NOT NULL,
-    rain_actual numeric(8, 2) NOT NULL,
+    rain_actual numeric(8, 2),
     wind numeric(6, 2) NOT NULL,
     condition text NOT NULL,
     forecast_made_at timestamptz NOT NULL,
+    actual_observed_at timestamptz,
     PRIMARY KEY (account_id, location_id, date),
     FOREIGN KEY (account_id, location_id)
         REFERENCES locations(account_id, location_id)
@@ -181,8 +188,12 @@ CREATE TABLE IF NOT EXISTS recommendations (
     model_version text NOT NULL,
     input_snapshot_id text NOT NULL,
     config_snapshot_id text NOT NULL,
+    input_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
+    config_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
+    is_active boolean NOT NULL DEFAULT true,
+    superseded_at timestamptz,
+    superseded_by uuid REFERENCES recommendations(recommendation_id),
     generated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (account_id, location_id, date, category, model_version),
     FOREIGN KEY (account_id, location_id)
         REFERENCES locations(account_id, location_id)
         ON DELETE CASCADE,
@@ -301,6 +312,10 @@ CREATE INDEX IF NOT EXISTS idx_daily_category_account_date
 
 CREATE INDEX IF NOT EXISTS idx_recommendations_account_date
     ON recommendations(account_id, location_id, date DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recommendations_active_unique
+    ON recommendations(account_id, location_id, date, category, model_version)
+    WHERE is_active = true;
 
 CREATE INDEX IF NOT EXISTS idx_pos_import_runs_account_date
     ON pos_import_runs(account_id, location_id, applied_at DESC);

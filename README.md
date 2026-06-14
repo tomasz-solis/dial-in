@@ -44,6 +44,26 @@ uv run python scripts/load_observed_data.py --observed-dir data/generated/observ
 
 The app should run only with the low-privilege role in `DATABASE_URL`.
 
+For an existing database that was migrated before the `schema_migrations` ledger existed,
+baseline the migrations already present, then apply the new pending migration:
+
+```bash
+uv run python scripts/migrate.py --target neon --baseline-through 006_pos_imports.sql --plan
+uv run python scripts/migrate.py --target neon --baseline-through 006_pos_imports.sql
+```
+
+To inspect without applying:
+
+```bash
+uv run python scripts/migrate.py --target neon --plan
+```
+
+To apply one migration explicitly:
+
+```bash
+uv run python scripts/migrate.py --target neon --only 007
+```
+
 ## Streamlit app
 
 Create `.streamlit/secrets.toml` from `.streamlit/secrets.example.toml` and replace the
@@ -97,6 +117,7 @@ not pay the refresh cost during app startup.
 uv run ruff check
 uv run mypy
 uv run pytest
+uv run python scripts/validate_realism.py data/generated
 ```
 
 Database-backed RLS tests require a reachable Postgres URL and are skipped when no test

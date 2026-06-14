@@ -69,3 +69,50 @@ def test_pos_import_schema_is_tenant_scoped() -> None:
     assert "CREATE POLICY tenant_pos_import_runs" in rls_sql
     assert "CREATE POLICY tenant_pos_daily_sales" in rls_sql
     assert "daily_metrics_input_source_check" in migration_sql
+
+
+def test_forecast_actuals_and_recommendation_audit_schema() -> None:
+    """Forecast actuals may be missing and recommendations should be append-only."""
+
+    init_sql = Path("migrations/001_init.sql").read_text(encoding="utf-8")
+    migration_sql = Path(
+        "migrations/007_forecast_actuals_and_recommendation_audit.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "temp_actual numeric(6, 2)," in init_sql
+    assert "rain_actual numeric(8, 2)," in init_sql
+    assert "actual_observed_at timestamptz" in init_sql
+    assert "input_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb" in init_sql
+    assert "config_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb" in init_sql
+    assert "is_active boolean NOT NULL DEFAULT true" in init_sql
+    assert "superseded_by uuid REFERENCES recommendations(recommendation_id)" in init_sql
+    assert "WHERE is_active = true" in init_sql
+
+    assert "ALTER COLUMN temp_actual DROP NOT NULL" in migration_sql
+    assert "ALTER COLUMN rain_actual DROP NOT NULL" in migration_sql
+    assert "ADD COLUMN IF NOT EXISTS actual_observed_at" in migration_sql
+    assert (
+        "DROP CONSTRAINT IF EXISTS "
+        "recommendations_account_id_location_id_date_category_model_version_key"
+    ) in migration_sql
+    assert "idx_recommendations_active_unique" in migration_sql
+
+
+def test_init_schema_includes_migration_ledger() -> None:
+    """Fresh databases should include a schema migration ledger."""
+
+    init_sql = Path("migrations/001_init.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS schema_migrations" in init_sql
+    assert "filename text PRIMARY KEY" in init_sql
+
+
+def test_ci_runs_quality_type_test_and_realism_gates() -> None:
+    """The default CI workflow should gate the daily-product quality checks."""
+
+    ci_sql = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "uv run ruff check" in ci_sql
+    assert "uv run mypy" in ci_sql
+    assert "uv run pytest" in ci_sql
+    assert "uv run python scripts/validate_realism.py data/generated" in ci_sql

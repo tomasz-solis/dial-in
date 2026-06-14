@@ -440,6 +440,7 @@ def _update_recommendation_outcome(
           AND location_id = %s
           AND date = %s
           AND category = %s
+          AND is_active = true
         """,
         (account_id, location_id, business_date, category),
     )
@@ -484,6 +485,7 @@ def _clear_recommendation_outcomes(
         WHERE account_id = %s
           AND location_id = %s
           AND date = %s
+          AND is_active = true
         """,
         (account_id, location_id, business_date),
     )
@@ -686,4 +688,3 @@ def _audit_value(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
-

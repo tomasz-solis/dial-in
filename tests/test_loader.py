@@ -38,6 +38,39 @@ def test_read_observed_frames_adds_default_location_hours(tmp_path: Path) -> Non
     ].notna().all()
 
 
+def test_read_observed_frames_allows_future_weather_without_actuals(tmp_path: Path) -> None:
+    """Forecast rows should load even when actual weather has not arrived yet."""
+
+    dataset = generate_synthetic_dataset(seed=20260531)
+    write_dataset(dataset, tmp_path)
+    weather_path = tmp_path / "observed" / "weather.parquet"
+    weather = pd.read_parquet(weather_path)
+    future_index = weather.index[-1]
+    weather.loc[future_index, ["temp_actual", "rain_actual", "actual_observed_at"]] = None
+    weather.to_parquet(weather_path, index=False)
+
+    frames = read_observed_frames(tmp_path / "observed")
+    loaded = frames["weather"].iloc[-1]
+
+    assert pd.isna(loaded["temp_actual"])
+    assert pd.isna(loaded["rain_actual"])
+    assert pd.isna(loaded["actual_observed_at"])
+
+
+def test_category_economics_values_source_defaults_for_older_exports(tmp_path: Path) -> None:
+    """Older economics parquet exports should load with explicit default provenance."""
+
+    dataset = generate_synthetic_dataset(seed=20260531)
+    write_dataset(dataset, tmp_path)
+    path = tmp_path / "observed" / "category_economics.parquet"
+    economics = pd.read_parquet(path).drop(columns=["values_source"])
+    economics.to_parquet(path, index=False)
+
+    frames = read_observed_frames(tmp_path / "observed")
+
+    assert set(frames["category_economics"]["values_source"]) == {"default"}
+
+
 def test_loader_rejects_truth_leakage(tmp_path: Path) -> None:
     """A truth-only field in observed parquet should fail before DB writes."""
 

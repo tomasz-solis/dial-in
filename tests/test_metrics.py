@@ -10,11 +10,14 @@ import pytest
 from dialin.metrics import (
     calibration_coverage,
     calibration_coverage_truth,
+    daily_operations_health,
     evaluate_against_truth,
     evaluate_model_vs_baselines,
     expected_misprep_cost,
+    model_gate_report,
     naive_baseline_forecasts,
     pinball_loss,
+    suspicious_operational_jumps,
 )
 
 
@@ -253,3 +256,83 @@ def test_expected_misprep_cost_handles_empty_inputs() -> None:
     empty = expected_misprep_cost(pd.DataFrame(), _weekly_sweet_history(), {}, demand_col="sold")
     assert empty["beats_baselines"] is None
     assert empty["model_cost_per_day"] is None
+
+
+def test_daily_operations_health_reports_data_path_rates() -> None:
+    """Operator health should expose missing, corrected, rejected, censored, and followed rates."""
+
+    daily = pd.DataFrame(
+        {
+            "date": [date(2026, 1, day) for day in (1, 2, 3)],
+            "is_open": [True, True, False],
+            "drinks_sold": [100, None, None],
+            "input_source": ["confirmed", "imputed", "confirmed"],
+        }
+    )
+    categories = pd.DataFrame(
+        {
+            "date": [date(2026, 1, 1), date(2026, 1, 2)],
+            "category": ["sweet", "sweet"],
+            "sold_out": [False, True],
+            "input_source": ["confirmed", "corrected"],
+        }
+    )
+    recommendations = pd.DataFrame({"adhered": [True, False, None]})
+    imports = pd.DataFrame({"rows_imported": [9], "rows_rejected": [1]})
+
+    health = daily_operations_health(daily, categories, recommendations, imports)
+
+    assert health["missing_closeout_rate"] == pytest.approx(0.5)
+    assert health["input_correction_rate"] == pytest.approx(0.25)
+    assert health["pos_import_rejection_rate"] == pytest.approx(0.1)
+    assert health["sellout_rate"] == pytest.approx(0.5)
+    assert health["adherence_rate"] == pytest.approx(0.5)
+
+
+def test_suspicious_operational_jumps_flags_large_changes() -> None:
+    """Large same-metric jumps should land in the review queue."""
+
+    daily = pd.DataFrame(
+        {
+            "date": [date(2026, 1, 1), date(2026, 1, 2)],
+            "drinks_sold": [100, 200],
+        }
+    )
+    categories = pd.DataFrame(
+        {
+            "date": [date(2026, 1, 1), date(2026, 1, 2)],
+            "category": ["sweet", "sweet"],
+            "sold": [20, 40],
+            "prepared": [24, 25],
+        }
+    )
+
+    jumps = suspicious_operational_jumps(daily, categories)
+
+    assert set(jumps["field"]) == {"drinks_sold", "sold"}
+
+
+def test_model_gate_report_starts_categories_in_shadow() -> None:
+    """Thin held-out evidence should keep a category advisory even if the model is accurate."""
+
+    history = _weekly_sweet_history()
+    dates = pd.date_range("2026-01-03", periods=6, freq="7D").date
+    matched = pd.DataFrame(
+        {
+            "date": [dates[4], dates[5]],
+            "category": ["sweet", "sweet"],
+            "recommended_prep": [48, 50],
+            "service_quantile": [0.78, 0.78],
+            "sold": [48, 50],
+            "sold_out": [False, False],
+            "demand_p_lower": [44, 46],
+            "demand_p_upper": [52, 54],
+            "confidence": ["Medium", "Medium"],
+        }
+    )
+
+    report = model_gate_report(matched, history, {"sweet": (3.2, 0.9)})
+
+    assert report[0]["category"] == "sweet"
+    assert report[0]["status"] == "shadow"
+    assert report[0]["evaluated_days"] == 2

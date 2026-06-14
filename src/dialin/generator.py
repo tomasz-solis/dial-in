@@ -348,6 +348,7 @@ def _economics_rows(cafe: CafeConfig, effective_from: date) -> list[dict[str, An
                 "service_quantile": round(service_quantile, 4),
                 "effective_from": effective_from,
                 "effective_to": None,
+                "values_source": "default",
             }
         )
     return rows
@@ -401,6 +402,7 @@ def _weather_for_day(
         "wind": round(float(max(1.0, rng.normal(10, 4))), 2),
         "condition": condition,
         "forecast_made_at": _local_timestamp(current_date - timedelta(days=1), cafe.timezone, 18),
+        "actual_observed_at": _local_timestamp(current_date, cafe.timezone, 18),
     }
 
 

@@ -160,6 +160,7 @@ def fetch_recommendation_outcomes(
              AND c.date = r.date
              AND c.category = r.category
             WHERE r.account_id = %s AND r.location_id = %s
+              AND r.is_active = true
               AND c.input_source <> 'imputed'
             ORDER BY r.date, r.category
             """,
@@ -192,6 +193,7 @@ def scorecard(database_url: str, account_id: str, location_id: str) -> dict[str,
              AND c.date = r.date
              AND c.category = r.category
             WHERE r.account_id = %s AND r.location_id = %s
+              AND r.is_active = true
               AND c.input_source <> 'imputed'
             ORDER BY r.date, r.category
             """,
@@ -228,4 +230,3 @@ def scorecard(database_url: str, account_id: str, location_id: str) -> dict[str,
         "adhered_rows": adhered_rows,
         "overridden_rows": overridden_rows,
     }
-

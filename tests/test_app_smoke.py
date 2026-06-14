@@ -15,6 +15,7 @@ from dialin import formatting
 from dialin import ui_components as ui
 from dialin import views as app_views
 from dialin.pos_import import DailySalesRollup, PosImportError, PosImportPreview
+from dialin.streamlit_cache import SetupPayload
 from dialin.views import closeout, performance, service, setup, today
 
 
@@ -253,6 +254,42 @@ def test_reason_sentence_stays_neutral_without_drivers() -> None:
     assert sentence == "A normal Thursday — demand should be close to a typical Thursday."
 
 
+def test_today_operator_cards_prioritize_action_watch_and_trust() -> None:
+    """The daily view should translate model output into owner-ready status."""
+
+    rows = [
+        {
+            "category": "sweet",
+            "recommended_prep": 42,
+            "confidence": "Low",
+            "risk_flag": "Stockout learning needed",
+        },
+        {
+            "category": "savory",
+            "recommended_prep": 18,
+            "confidence": "Medium",
+            "risk_flag": "Normal",
+        },
+    ]
+
+    assert today._operator_action(rows) == (
+        "Use as advisory",
+        "Follow the numbers above, then record a clean closeout.",
+    )
+    assert today._watch_item(rows, {"events": []}) == (
+        "Stockout learning needed",
+        "Sweet needs attention.",
+    )
+    assert today._trust_status(rows) == (
+        "Advisory",
+        "Useful, but closeout quality matters most today.",
+    )
+    assert today._closeout_focus(rows) == (
+        "Sellout time",
+        "If Sweet runs out, record the last sale time.",
+    )
+
+
 def test_service_window_formatting_handles_open_and_closed_days() -> None:
     """Service windows should read cleanly in the intraday panel."""
 
@@ -334,6 +371,58 @@ def test_workflow_rows_keep_daily_flow_short() -> None:
 
     assert len(rows) == 6
     assert rows[0]["moment"] == "Before service"
+
+
+def test_setup_readiness_surfaces_trust_blockers() -> None:
+    """Setup should expose default economics and POS import quality at a glance."""
+
+    assert setup._hours_readiness([{"is_open": True}, {"is_open": False}]) == (
+        "Opening hours",
+        "Ready",
+        "1 open days used for recommendations.",
+    )
+    assert setup._economics_readiness([{"values_source": "default"}]) == (
+        "Costs & prices",
+        "Need confirmation",
+        "Confirm costs to improve confidence.",
+    )
+    assert setup._pos_readiness([{"rows_imported": 8, "rows_rejected": 2}]) == (
+        "POS sales",
+        "Review rejects",
+        "2 rejected rows need mapping review.",
+    )
+    assert setup._event_readiness([]) == (
+        "Events",
+        "None expected",
+        "No local event lift is planned.",
+    )
+
+
+def test_setup_readiness_score_names_next_action() -> None:
+    """Setup score should convert data readiness into a clear operating mode."""
+
+    payload: SetupPayload = {
+        "hours": [{"is_open": True}],
+        "economics": [{"values_source": "default"}],
+        "recent_imports": [],
+        "events": [],
+    }
+
+    assert setup._setup_readiness_score(payload) == (
+        78,
+        "Use with checks",
+        ("Confirm economics", "Default costs keep confidence lower."),
+    )
+    assert setup._operating_mode(78) == "Advisory"
+
+    ready_payload: SetupPayload = {
+        "hours": [{"is_open": True}],
+        "economics": [{"values_source": "owner_confirmed"}],
+        "recent_imports": [{"rows_imported": 100, "rows_rejected": 0}],
+        "events": [],
+    }
+    assert setup._setup_readiness_score(ready_payload)[0] == 100
+    assert setup._operating_mode(100) == "Daily guide"
 
 
 def test_import_summary_rows_show_apply_status() -> None:

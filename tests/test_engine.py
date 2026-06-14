@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -16,6 +17,7 @@ from dialin.engine import (
     build_recommendations,
     decensored_demand_series,
     negative_binomial_quantile,
+    result_to_record,
     service_quantile,
     stable_hash,
 )
@@ -147,6 +149,24 @@ def test_training_history_excludes_imputed_daily_rows() -> None:
     assert history["date"].to_list() == [date(2026, 1, 1)]
 
 
+def test_training_history_keeps_current_menu_version_only() -> None:
+    """A menu-version change should down-weight pre-change demand history."""
+
+    daily = pd.DataFrame(
+        {
+            "date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)],
+            "is_open": [True, True, True],
+            "drinks_sold": [100, 120, 140],
+            "input_source": ["confirmed", "confirmed", "confirmed"],
+            "menu_version": ["v1", "v1", "summer"],
+        }
+    )
+
+    history = _open_history_before(daily, date(2026, 1, 4))
+
+    assert history["date"].to_list() == [date(2026, 1, 3)]
+
+
 def test_training_history_excludes_imputed_category_rows() -> None:
     """Skipped closeouts should not enter category demand history."""
 
@@ -194,6 +214,45 @@ def test_build_recommendations_from_generated_history() -> None:
     assert {result.category for result in results} == {"sweet", "savory"}
     assert all(result.recommended_prep >= result.demand_p50 for result in results)
     assert all(result.demand_p_upper >= result.demand_p_lower for result in results)
+
+
+def test_recommendation_snapshots_are_replayable_and_hashed() -> None:
+    """A generated recommendation should retain the inputs and config needed to explain it."""
+
+    dataset = generate_synthetic_dataset(seed=20260531)
+    observed = dataset.observed
+    account_id = "acct_fadri"
+    target_date = date(2026, 5, 30)
+
+    result = build_recommendations(
+        account_id=account_id,
+        location_id="loc_fadri_main",
+        target_date=target_date,
+        daily_metrics=observed["daily_metrics"][
+            observed["daily_metrics"]["account_id"] == account_id
+        ],
+        category_metrics=observed["daily_category_metrics"][
+            observed["daily_category_metrics"]["account_id"] == account_id
+        ],
+        weather=observed["weather"][observed["weather"]["account_id"] == account_id],
+        events=observed["events"][observed["events"]["account_id"] == account_id],
+        economics=observed["category_economics"][
+            observed["category_economics"]["account_id"] == account_id
+        ],
+    )[0]
+
+    assert result.input_snapshot_id == stable_hash(result.input_snapshot)
+    assert result.config_snapshot_id == stable_hash(result.config_snapshot)
+    assert result.input_snapshot["target_date"] == target_date.isoformat()
+    assert result.input_snapshot["history_depth"] > 0
+    assert {"traffic_drivers", "attach_rate", "censor_rate", "range_quantiles"}.issubset(
+        result.input_snapshot
+    )
+    assert result.config_snapshot["economics"]["values_source"] == "default"
+    assert "upper_tail_censor_widening" in result.config_snapshot["constants"]
+    record = result_to_record(result)
+    assert json.loads(record["input_snapshot"])["category"] == result.category
+    assert json.loads(record["config_snapshot"])["model_version"] == result.model_version
 
 
 def test_stable_hash_accepts_postgres_decimal_values() -> None:

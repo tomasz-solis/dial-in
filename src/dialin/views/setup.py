@@ -76,6 +76,8 @@ def _render_setup_tab(
         "Season is derived from the calendar. Weather comes from the loaded forecast rows. "
         "Events and opening hours are owner-controlled here."
     )
+    _render_readiness_summary(payload)
+    _render_setup_readiness(payload)
     _render_hours_setup(
         database_url,
         account_id,
@@ -99,6 +101,157 @@ def _render_setup_tab(
     )
     with st.expander("Daily workflow reference"):
         st.dataframe(pd.DataFrame(_workflow_rows()), hide_index=True, width="stretch")
+
+
+def _render_readiness_summary(payload: SetupPayload) -> None:
+    """Render the owner-facing setup readiness score and next action."""
+
+    score, status, next_action = _setup_readiness_score(payload)
+    tone = "mint" if score >= 90 else "light"
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.metric_card("Can I trust it today?", f"{score}/100", status, tone=tone),
+                ui.proof_card("Fix first", next_action[0], next_action[1]),
+                ui.proof_card("How to use it", _operating_mode(score), _operating_caption(score)),
+            )
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _setup_readiness_score(payload: SetupPayload) -> tuple[int, str, tuple[str, str]]:
+    """Return setup readiness score, status, and most important next action."""
+
+    score = 10
+    blockers: list[tuple[str, str]] = []
+
+    open_days = sum(1 for row in payload["hours"] if bool(row.get("is_open")))
+    if open_days > 0:
+        score += 25
+    else:
+        blockers.append(("Set opening hours", "No active open days are configured."))
+
+    economics = payload["economics"]
+    if not economics:
+        blockers.append(("Add economics", "Waste and run-out costs are missing."))
+    else:
+        sources = {str(row.get("values_source", "default")) for row in economics}
+        if sources <= {"owner_confirmed", "corrected"}:
+            score += 30
+        else:
+            score += 18
+            blockers.append(("Confirm economics", "Default costs keep confidence lower."))
+
+    imports = payload["recent_imports"]
+    if not imports:
+        score += 15
+        blockers.append(
+            ("Import POS sales", "Manual closeout works, but POS history improves speed.")
+        )
+    else:
+        imported = sum(int(row.get("rows_imported") or 0) for row in imports)
+        rejected = sum(int(row.get("rows_rejected") or 0) for row in imports)
+        reject_rate = rejected / max(imported + rejected, 1)
+        if reject_rate <= 0.05:
+            score += 25
+        else:
+            score += 10
+            blockers.append(("Review POS rejects", f"{rejected} recent rows were rejected."))
+
+    score += 10
+    score = min(score, 100)
+    if score >= 90:
+        status = "Ready for daily use"
+    elif score >= 75:
+        status = "Use with checks"
+    else:
+        status = "Needs setup before trust"
+    next_action = (
+        blockers[0]
+        if blockers
+        else ("Keep closing out", "Daily closeouts keep the model current.")
+    )
+    return score, status, next_action
+
+
+def _operating_mode(score: int) -> str:
+    """Return a compact operating mode from readiness score."""
+
+    if score >= 90:
+        return "Daily guide"
+    if score >= 75:
+        return "Advisory"
+    return "Setup mode"
+
+
+def _operating_caption(score: int) -> str:
+    """Return plain-language caption for setup operating mode."""
+
+    if score >= 90:
+        return "Use the prep numbers as the daily plan."
+    if score >= 75:
+        return "Use the prep numbers, but review warnings."
+    return "Finish setup before relying on recommendations."
+
+
+def _render_setup_readiness(payload: SetupPayload) -> None:
+    """Render setup status cards that explain trust blockers at a glance."""
+
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.proof_card(*_hours_readiness(payload["hours"])),
+                ui.proof_card(*_economics_readiness(payload["economics"])),
+                ui.proof_card(*_pos_readiness(payload["recent_imports"])),
+                ui.proof_card(*_event_readiness(payload["events"])),
+            ),
+            columns=4,
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def _hours_readiness(rows: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """Return opening-hours readiness card content."""
+
+    open_days = sum(1 for row in rows if bool(row.get("is_open")))
+    if open_days == 0:
+        return "Opening hours", "Needs review", "No open days are active."
+    return "Opening hours", "Ready", f"{open_days} open days used for recommendations."
+
+
+def _economics_readiness(rows: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """Return economics readiness card content."""
+
+    if not rows:
+        return "Costs & prices", "Missing", "Add price, cost and waste values."
+    sources = {str(row.get("values_source", "default")) for row in rows}
+    if sources == {"owner_confirmed"}:
+        return "Costs & prices", "Confirmed", "Owner values are active."
+    if "corrected" in sources:
+        return "Costs & prices", "Corrected", "Updated values are active."
+    return "Costs & prices", "Need confirmation", "Confirm costs to improve confidence."
+
+
+def _pos_readiness(rows: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """Return POS import readiness card content."""
+
+    if not rows:
+        return "POS sales", "Not imported", "Manual closeout still works."
+    rejected = sum(int(row.get("rows_rejected") or 0) for row in rows)
+    imported = sum(int(row.get("rows_imported") or 0) for row in rows)
+    if rejected > 0:
+        return "POS sales", "Review rejects", f"{rejected} rejected rows need mapping review."
+    return "POS sales", "Ready", f"{imported} recent sales rows imported."
+
+
+def _event_readiness(rows: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """Return event readiness card content."""
+
+    if not rows:
+        return "Events", "None expected", "No local event lift is planned."
+    return "Events", f"{len(rows)} logged", "Upcoming context is included."
 
 
 def _render_hours_setup(

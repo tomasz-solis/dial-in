@@ -41,11 +41,15 @@ from dialin.repository.reads import (
     scorecard,
 )
 from dialin.repository.recommendations import (
+    fetch_active_recommendations_for_date,
     fetch_latest_recommendations,
+    fetch_recommendation_build_payload,
     fetch_recommendation_context,
     fetch_recommendations_for_date,
     generate_and_store_recommendations,
+    insert_recommendation_set,
     persist_recommendations,
+    supersede_active_recommendations,
 )
 
 __all__ = [
@@ -57,6 +61,7 @@ __all__ = [
     "economics_service_quantile",
     "effective_location_hours",
     "expected_intraday_drinks",
+    "fetch_active_recommendations_for_date",
     "fetch_category_economics",
     "fetch_data_corrections",
     "fetch_events_for_window",
@@ -65,11 +70,13 @@ __all__ = [
     "fetch_latest_recommendations",
     "fetch_location_hours_plan",
     "fetch_recent_pos_import_runs",
+    "fetch_recommendation_build_payload",
     "fetch_recommendation_context",
     "fetch_recommendation_outcomes",
     "fetch_recommendations_for_date",
     "generate_and_store_recommendations",
     "insert_manual_event",
+    "insert_recommendation_set",
     "latest_business_date",
     "list_locations",
     "mark_closed_day",
@@ -79,6 +86,7 @@ __all__ = [
     "persist_recommendations",
     "recommendation_adhered",
     "scorecard",
+    "supersede_active_recommendations",
     "upsert_category_economics",
     "upsert_closeout",
     "upsert_location_hours",

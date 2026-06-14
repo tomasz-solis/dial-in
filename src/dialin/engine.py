@@ -68,6 +68,8 @@ class RecommendationResult:
     model_version: str
     input_snapshot_id: str
     config_snapshot_id: str
+    input_snapshot: dict[str, Any]
+    config_snapshot: dict[str, Any]
     generated_at: datetime
 
 
@@ -107,6 +109,10 @@ def build_recommendations(
 
     for category in sorted(category_metrics["category"].dropna().unique()):
         category_history = _observed_category_history(category_metrics, str(category), target_date)
+        if not open_history.empty:
+            category_history = category_history[
+                pd.to_datetime(category_history["date"]).dt.date.isin(set(open_history["date"]))
+            ].copy()
         if category_history.empty:
             continue
         economics_row = _economics_for_category(economics, category, target_date)
@@ -120,6 +126,8 @@ def build_recommendations(
         history_depth = int(category_history.shape[0])
         tail_fallback_recent = _tail_fallback_recent(corrected, target_date)
         confidence = _confidence(history_depth, censor_rate, target_weather)
+        if str(economics_row.get("values_source", "default")) == "default":
+            confidence = _downgrade_confidence(confidence)
         if tail_fallback_recent:
             confidence = "Low"
         lower_q, upper_q = (0.05, 0.95) if confidence == "Low" else (0.1, 0.9)
@@ -137,24 +145,25 @@ def build_recommendations(
         else:
             risk_flag = _risk_flag(recommended_prep, demand_p_upper, censor_rate)
         drivers = _top_drivers(traffic_drivers, category, attach_rate, censor_rate)
-        input_snapshot_id = stable_hash(
-            {
-                "target_date": target_date.isoformat(),
-                "traffic_mean": round(traffic_mean, 4),
-                "attach_rate": round(attach_rate, 6),
-                "demand_mean": round(demand_mean, 4),
-                "dispersion": round(dispersion, 4),
-                "history_depth": history_depth,
-                "censor_rate": round(censor_rate, 4),
-                "tail_fallback_recent": tail_fallback_recent,
-            }
+        input_snapshot = _input_snapshot(
+            target_date=target_date,
+            category=str(category),
+            traffic_mean=traffic_mean,
+            traffic_drivers=traffic_drivers,
+            target_weather=target_weather,
+            target_events=target_events,
+            attach_rate=attach_rate,
+            demand_mean=demand_mean,
+            dispersion=dispersion,
+            history_depth=history_depth,
+            censor_rate=censor_rate,
+            tail_fallback_recent=tail_fallback_recent,
+            lower_q=lower_q,
+            upper_q=upper_q,
         )
-        config_snapshot_id = stable_hash(
-            {
-                "model_version": MODEL_VERSION,
-                "economics": _json_ready(economics_row.to_dict()),
-            }
-        )
+        config_snapshot = _config_snapshot(economics_row)
+        input_snapshot_id = stable_hash(input_snapshot)
+        config_snapshot_id = stable_hash(config_snapshot)
         results.append(
             RecommendationResult(
                 account_id=account_id,
@@ -172,6 +181,8 @@ def build_recommendations(
                 model_version=MODEL_VERSION,
                 input_snapshot_id=input_snapshot_id,
                 config_snapshot_id=config_snapshot_id,
+                input_snapshot=input_snapshot,
+                config_snapshot=config_snapshot,
                 generated_at=datetime.now(tz=UTC),
             )
         )
@@ -261,7 +272,69 @@ def result_to_record(result: RecommendationResult) -> dict[str, Any]:
 
     record = asdict(result)
     record["top_drivers"] = json.dumps(result.top_drivers)
+    record["input_snapshot"] = json.dumps(_json_ready(result.input_snapshot))
+    record["config_snapshot"] = json.dumps(_json_ready(result.config_snapshot))
     return record
+
+
+def _input_snapshot(
+    *,
+    target_date: date,
+    category: str,
+    traffic_mean: float,
+    traffic_drivers: dict[str, float],
+    target_weather: dict[str, Any],
+    target_events: pd.DataFrame,
+    attach_rate: float,
+    demand_mean: float,
+    dispersion: float,
+    history_depth: int,
+    censor_rate: float,
+    tail_fallback_recent: bool,
+    lower_q: float,
+    upper_q: float,
+) -> dict[str, Any]:
+    """Return the replayable observed inputs used for one recommendation."""
+
+    event_records = (
+        []
+        if target_events.empty
+        else target_events.sort_values(["date", "event_name"]).to_dict(orient="records")
+    )
+    return {
+        "target_date": target_date.isoformat(),
+        "category": category,
+        "traffic_mean": round(traffic_mean, 4),
+        "traffic_drivers": {key: round(float(value), 6) for key, value in traffic_drivers.items()},
+        "target_weather": _json_ready(target_weather),
+        "target_events": _json_ready(event_records),
+        "attach_rate": round(attach_rate, 6),
+        "demand_mean": round(demand_mean, 4),
+        "dispersion": round(dispersion, 4),
+        "history_depth": history_depth,
+        "censor_rate": round(censor_rate, 4),
+        "tail_fallback_recent": tail_fallback_recent,
+        "range_quantiles": {"lower": lower_q, "upper": upper_q},
+    }
+
+
+def _config_snapshot(economics_row: pd.Series[Any]) -> dict[str, Any]:
+    """Return the model constants and economics used for one recommendation."""
+
+    return {
+        "model_version": MODEL_VERSION,
+        "economics": _json_ready(economics_row.to_dict()),
+        "constants": {
+            "fallback_demand_uplift": FALLBACK_DEMAND_UPLIFT,
+            "tail_fallback_window_days": TAIL_FALLBACK_WINDOW_DAYS,
+            "sparse_history_dispersion": SPARSE_HISTORY_DISPERSION,
+            "low_variance_dispersion": LOW_VARIANCE_DISPERSION,
+            "dispersion_floor": DISPERSION_FLOOR,
+            "dispersion_ceiling": DISPERSION_CEILING,
+            "upper_tail_censor_widening": UPPER_TAIL_CENSOR_WIDENING,
+            "max_upper_quantile": MAX_UPPER_QUANTILE,
+        },
+    }
 
 
 def _open_history_before(daily_metrics: pd.DataFrame, target_date: date) -> pd.DataFrame:
@@ -274,6 +347,9 @@ def _open_history_before(daily_metrics: pd.DataFrame, target_date: date) -> pd.D
     rows = frame[(frame["is_open"] == True) & (frame["date"] < target_date)].copy()  # noqa: E712
     if "input_source" in rows.columns:
         rows = rows[rows["input_source"] != "imputed"].copy()
+    if "menu_version" in rows.columns and not rows.empty:
+        latest_menu = str(rows.sort_values("date").iloc[-1]["menu_version"])
+        rows = rows[rows["menu_version"].astype(str) == latest_menu].copy()
     return rows
 
 
@@ -401,6 +477,16 @@ def _confidence(history_depth: int, censor_rate: float, target_weather: dict[str
     if history_depth < 90 or censor_rate > 0.25:
         return "Medium"
     return "High"
+
+
+def _downgrade_confidence(confidence: str) -> str:
+    """Lower confidence one step while owner economics still use defaults."""
+
+    if confidence == "High":
+        return "Medium"
+    if confidence == "Medium":
+        return "Low"
+    return confidence
 
 
 def _risk_flag(recommended_prep: int, demand_p_upper: int, censor_rate: float) -> str:

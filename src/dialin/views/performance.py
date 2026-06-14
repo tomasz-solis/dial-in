@@ -17,17 +17,17 @@ from dialin.formatting import (
 from dialin.metrics import (
     calibration_coverage,
     calibration_coverage_truth,
+    daily_operations_health,
     evaluate_against_truth,
     evaluate_model_vs_baselines,
     expected_misprep_cost,
+    model_gate_report,
+    suspicious_operational_jumps,
 )
 from dialin.streamlit_cache import (
-    fetch_category_economics,
-    fetch_data_corrections,
-    fetch_history_frames,
-    fetch_recommendation_outcomes,
+    PerformancePayload,
+    fetch_performance_payload,
     load_truth_demand,
-    scorecard,
 )
 
 PLOTLY_CONFIG: dict[str, bool] = {"displayModeBar": False, "responsive": True}
@@ -47,20 +47,36 @@ def render(database_url: str, account_id: str, location_id: str) -> None:
         st.info("Load the analysis when you need the full model-quality readout.")
         return
 
-    _render_accuracy_tab(database_url, account_id, location_id)
-    _render_correction_audit(database_url, account_id, location_id)
+    payload = fetch_performance_payload(database_url, account_id, location_id)
+    _render_accuracy_tab(payload, account_id, location_id)
+    _render_correction_audit(payload["corrections"])
 
 
-def _render_accuracy_tab(database_url: str, account_id: str, location_id: str) -> None:
+def _render_accuracy_tab(
+    payload: PerformancePayload,
+    account_id: str,
+    location_id: str,
+) -> None:
     """Render observed accuracy and business impact proxy charts."""
 
-    card = scorecard(database_url, account_id, location_id)
+    card = payload["scorecard"]
     frame = _accuracy_frame(card["rows"])
+    matched = pd.DataFrame(payload["outcomes"])
+    frames = payload["frames"]
+    history = frames.get("daily_category_metrics", pd.DataFrame())
+    if "input_source" in history.columns:
+        history = history[history["input_source"] != "imputed"]
+    economics = _economics_costs_from_rows(payload["economics"])
     st.caption(
         "These are observed proxies. Sold-out days hide true demand, so the app does not "
         "treat sales alone as full forecast accuracy."
     )
-    _render_model_quality(database_url, account_id, location_id)
+    _render_operations_health(
+        frames=frames,
+        imports=pd.DataFrame(payload["recent_imports"]),
+        card=card,
+    )
+    _render_model_quality(matched, history, economics, account_id, location_id)
     _render_scorecard_snapshot(card)
 
     if frame.empty:
@@ -121,19 +137,17 @@ def _render_accuracy_tab(database_url: str, account_id: str, location_id: str) -
             st.dataframe(pd.DataFrame(override_rows), hide_index=True, width="stretch")
 
 
-def _render_model_quality(database_url: str, account_id: str, location_id: str) -> None:
+def _render_model_quality(
+    matched: pd.DataFrame,
+    history: pd.DataFrame,
+    economics: dict[str, tuple[float, float]],
+    account_id: str,
+    location_id: str,
+) -> None:
     """Render expected-cost, calibration, and baseline verdicts (PRD section 6.1/6.2)."""
 
-    outcomes = fetch_recommendation_outcomes(database_url, account_id, location_id)
-    matched = pd.DataFrame(outcomes)
     if matched.empty:
         return
-    history = fetch_history_frames(database_url, account_id, location_id)[
-        "daily_category_metrics"
-    ]
-    if "input_source" in history.columns:
-        history = history[history["input_source"] != "imputed"]
-    economics = _economics_costs(database_url, account_id, location_id, matched)
 
     st.markdown("#### Is the model earning trust?")
 
@@ -197,22 +211,98 @@ def _render_model_quality(database_url: str, account_id: str, location_id: str) 
             width="stretch",
             config=PLOTLY_CONFIG,
             key="model_quality_baselines",
-        )
+    )
 
     _render_truth_quality(matched, history, economics, account_id, location_id)
+    _render_model_gates(matched, history, economics)
 
 
-def _economics_costs(
-    database_url: str,
-    account_id: str,
-    location_id: str,
+def _render_operations_health(
+    frames: dict[str, pd.DataFrame],
+    imports: pd.DataFrame,
+    card: dict[str, Any],
+) -> None:
+    """Render daily operating health checks for data and workflow reliability."""
+
+    health = daily_operations_health(
+        frames.get("daily_metrics", pd.DataFrame()),
+        frames.get("daily_category_metrics", pd.DataFrame()),
+        pd.DataFrame(card.get("rows", [])),
+        imports,
+    )
+
+    st.markdown("#### Daily operations health")
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.proof_card(
+                    "Missing closeouts",
+                    _optional_percent(health.get("missing_closeout_rate")),
+                    f"{health.get('open_days', 0)} open days checked.",
+                ),
+                ui.proof_card(
+                    "Input corrections",
+                    _optional_percent(health.get("input_correction_rate")),
+                    "Corrected closeouts and category rows.",
+                ),
+                ui.proof_card(
+                    "POS rejects",
+                    _optional_percent(health.get("pos_import_rejection_rate")),
+                    "Rejected rows in recent POS imports.",
+                ),
+                ui.proof_card(
+                    "Sellout rows",
+                    _optional_percent(health.get("sellout_rate")),
+                    "Rows where true demand may be hidden.",
+                ),
+                ui.proof_card(
+                    "Followed",
+                    _optional_percent(health.get("adherence_rate")),
+                    f"{health.get('attributed_rows', 0)} attributed recommendation rows.",
+                ),
+            )
+        ),
+        unsafe_allow_html=True,
+    )
+
+    jumps = suspicious_operational_jumps(
+        frames.get("daily_metrics", pd.DataFrame()),
+        frames.get("daily_category_metrics", pd.DataFrame()),
+    )
+    if not jumps.empty:
+        with st.expander("Data quality watchlist"):
+            st.dataframe(jumps.tail(20), hide_index=True, width="stretch")
+
+
+def _render_model_gates(
     matched: pd.DataFrame,
-) -> dict[str, tuple[float, float]]:
-    """Return per-category (under_cost, over_cost) from effective category economics."""
+    history: pd.DataFrame,
+    economics: dict[str, tuple[float, float]],
+) -> None:
+    """Render shadow/live readiness by category."""
 
-    as_of = pd.to_datetime(matched["date"]).max().date()
+    gates = model_gate_report(matched, history, economics)
+    if not gates:
+        return
+    st.markdown("#### Shadow/live gate")
+    st.caption(
+        "Categories stay advisory until held-out days, range coverage, bias, censoring, "
+        "pinball loss, and expected cost all clear the gate."
+    )
+    display = pd.DataFrame(gates)
+    for column in ("range_coverage", "censoring_rate"):
+        if column in display:
+            display[column] = display[column].map(
+                lambda value: "" if pd.isna(value) else format_percent(float(value))
+            )
+    st.dataframe(display, hide_index=True, width="stretch")
+
+
+def _economics_costs_from_rows(rows: list[dict[str, Any]]) -> dict[str, tuple[float, float]]:
+    """Return per-category (under_cost, over_cost) from effective category economics rows."""
+
     costs: dict[str, tuple[float, float]] = {}
-    for row in fetch_category_economics(database_url, account_id, location_id, as_of):
+    for row in rows:
         retail = float(row["retail_price"])
         cogs = float(row["unit_cogs"])
         salvage = float(row["salvage_share_default"])
@@ -349,6 +439,14 @@ def _eur_per_day(value: Any) -> str:
     if value is None:
         return "Not enough data"
     return f"€{float(value):.2f}/day"
+
+
+def _optional_percent(value: Any) -> str:
+    """Format a nullable percentage for proof cards."""
+
+    if value is None:
+        return "Not enough data"
+    return format_percent(float(value))
 
 
 def _coverage_label(calibration: dict[str, Any]) -> str:
@@ -567,10 +665,9 @@ def _recent_override_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return override_rows[-8:]
 
 
-def _render_correction_audit(database_url: str, account_id: str, location_id: str) -> None:
+def _render_correction_audit(rows: list[dict[str, Any]]) -> None:
     """Render recent data correction audit rows."""
 
-    rows = fetch_data_corrections(database_url, account_id, location_id)
     with st.expander("Data corrections"):
         if not rows:
             st.caption("No corrections recorded yet.")

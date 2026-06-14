@@ -305,3 +305,159 @@ def expected_misprep_cost(
         "savings_per_day_vs_best": round(best_baseline - per_day["model"], 2),
         "beats_baselines": per_day["model"] < best_baseline,
     }
+
+
+def daily_operations_health(
+    daily_metrics: pd.DataFrame,
+    category_metrics: pd.DataFrame,
+    recommendation_rows: pd.DataFrame,
+    pos_import_runs: pd.DataFrame,
+) -> dict[str, Any]:
+    """Return daily data-quality and workflow health metrics for operators."""
+
+    open_daily = (
+        daily_metrics[daily_metrics["is_open"].astype(bool)].copy()
+        if not daily_metrics.empty and "is_open" in daily_metrics
+        else pd.DataFrame()
+    )
+    open_days = len(open_daily)
+    missing_days = (
+        int((open_daily.get("input_source", pd.Series(dtype=str)) == "imputed").sum())
+        if open_days
+        else 0
+    )
+    corrected_days = (
+        int((open_daily.get("input_source", pd.Series(dtype=str)) == "corrected").sum())
+        if open_days
+        else 0
+    )
+    category_rows = len(category_metrics) if not category_metrics.empty else 0
+    corrected_category_rows = (
+        int((category_metrics.get("input_source", pd.Series(dtype=str)) == "corrected").sum())
+        if category_rows
+        else 0
+    )
+    sellout_rows = (
+        int(category_metrics["sold_out"].astype(bool).sum())
+        if category_rows and "sold_out" in category_metrics
+        else 0
+    )
+    attributed_rows = (
+        int(recommendation_rows["adhered"].notna().sum())
+        if not recommendation_rows.empty and "adhered" in recommendation_rows
+        else 0
+    )
+    adhered_rows = (
+        int((recommendation_rows["adhered"] == True).sum())  # noqa: E712
+        if attributed_rows
+        else 0
+    )
+    imported = (
+        int(pos_import_runs["rows_imported"].sum())
+        if not pos_import_runs.empty and "rows_imported" in pos_import_runs
+        else 0
+    )
+    rejected = (
+        int(pos_import_runs["rows_rejected"].sum())
+        if not pos_import_runs.empty and "rows_rejected" in pos_import_runs
+        else 0
+    )
+    return {
+        "open_days": open_days,
+        "missing_closeout_rate": missing_days / open_days if open_days else None,
+        "input_correction_rate": (corrected_days + corrected_category_rows)
+        / max(open_days + category_rows, 1),
+        "pos_import_rejection_rate": rejected / max(imported + rejected, 1),
+        "sellout_rate": sellout_rows / category_rows if category_rows else None,
+        "adherence_rate": adhered_rows / attributed_rows if attributed_rows else None,
+        "attributed_rows": attributed_rows,
+    }
+
+
+def suspicious_operational_jumps(
+    daily_metrics: pd.DataFrame,
+    category_metrics: pd.DataFrame,
+    threshold: float = 0.6,
+) -> pd.DataFrame:
+    """Return dates with large same-category operational jumps worth reviewing."""
+
+    rows: list[dict[str, Any]] = []
+    if not daily_metrics.empty and {"date", "drinks_sold"}.issubset(daily_metrics.columns):
+        daily = daily_metrics.sort_values("date").copy()
+        daily["previous"] = daily["drinks_sold"].shift(1)
+        for _, row in daily.dropna(subset=["drinks_sold", "previous"]).iterrows():
+            previous = max(float(row["previous"]), 1.0)
+            change = abs(float(row["drinks_sold"]) - previous) / previous
+            if change >= threshold:
+                rows.append(
+                    {
+                        "date": row["date"],
+                        "category": "drinks",
+                        "field": "drinks_sold",
+                        "change": round(change, 3),
+                    }
+                )
+    if not category_metrics.empty:
+        for category, group in category_metrics.sort_values("date").groupby("category"):
+            for field in ("sold", "prepared"):
+                if field not in group:
+                    continue
+                series = group[["date", field]].copy()
+                series["previous"] = series[field].shift(1)
+                for _, row in series.dropna(subset=[field, "previous"]).iterrows():
+                    previous = max(float(row["previous"]), 1.0)
+                    change = abs(float(row[field]) - previous) / previous
+                    if change >= threshold:
+                        rows.append(
+                            {
+                                "date": row["date"],
+                                "category": str(category),
+                                "field": field,
+                                "change": round(change, 3),
+                            }
+                        )
+    return pd.DataFrame(rows)
+
+
+def model_gate_report(
+    matched: pd.DataFrame,
+    category_history: pd.DataFrame,
+    economics: dict[str, tuple[float, float]],
+) -> list[dict[str, Any]]:
+    """Return shadow/live gate diagnostics by category."""
+
+    reports: list[dict[str, Any]] = []
+    if matched.empty:
+        return reports
+    for category, group in matched.groupby("category"):
+        history = category_history[category_history["category"] == category]
+        evaluation = evaluate_model_vs_baselines(group, history)
+        calibration = calibration_coverage(group)
+        cost = expected_misprep_cost(group, history, economics, demand_col="sold")
+        signed_error = (
+            float((group["recommended_prep"] - group["sold"]).mean())
+            if {"recommended_prep", "sold"}.issubset(group.columns)
+            else 0.0
+        )
+        enough_days = int(evaluation["evaluated_dates"]) >= 28
+        calibrated = calibration.get("coverage") is not None and 0.65 <= float(
+            calibration["coverage"]
+        ) <= 0.95
+        low_censoring = float(evaluation.get("censored_share") or 0.0) <= 0.4
+        unbiased = abs(signed_error) <= max(float(group["sold"].mean()) * 0.15, 3.0)
+        beats = evaluation.get("beats_baselines") is True
+        cost_positive = cost.get("beats_baselines") is True
+        live_ready = all((enough_days, calibrated, low_censoring, unbiased, beats, cost_positive))
+        reports.append(
+            {
+                "category": str(category),
+                "status": "live-ready" if live_ready else "shadow",
+                "evaluated_days": int(evaluation["evaluated_dates"]),
+                "beats_baselines": beats,
+                "range_coverage": calibration.get("coverage"),
+                "signed_error": round(signed_error, 2),
+                "censoring_rate": evaluation.get("censored_share"),
+                "expected_cost_beats_baseline": cost_positive,
+            }
+        )
+    return reports
