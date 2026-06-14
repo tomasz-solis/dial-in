@@ -23,5 +23,7 @@ jobs:
         run: uv run mypy
       - name: Pytest
         run: uv run pytest
+      - name: Generate synthetic demo data
+        run: uv run python scripts/generate_synthetic_data.py --seed 20260531 --output data/generated
       - name: Synthetic realism validation
         run: uv run python scripts/validate_realism.py data/generated

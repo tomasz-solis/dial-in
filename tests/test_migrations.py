@@ -115,4 +115,5 @@ def test_ci_runs_quality_type_test_and_realism_gates() -> None:
     assert "uv run ruff check" in ci_sql
     assert "uv run mypy" in ci_sql
     assert "uv run pytest" in ci_sql
+    assert "uv run python scripts/generate_synthetic_data.py --seed 20260531" in ci_sql
     assert "uv run python scripts/validate_realism.py data/generated" in ci_sql
