@@ -22,7 +22,7 @@ def test_apply_pos_import_replaces_rollups_without_touching_category_closeouts(
     def fake_account_connection(_database_url: str, _account_id: str) -> Iterator[_FakeConnection]:
         yield fake_conn
 
-    monkeypatch.setattr(repository, "account_connection", fake_account_connection)
+    monkeypatch.setattr(repository.pos, "account_connection", fake_account_connection)
     preview = PosImportPreview(
         rows_read=4,
         rows_imported=3,

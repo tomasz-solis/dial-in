@@ -1,10 +1,10 @@
 """Keep the synthetic demo tenants current up to today.
 
-The Streamlit app already refreshes demo data on load (see
-``dialin.demo_freshness``), so a shared link self-heals when someone opens it.
+The deployed Streamlit app keeps startup fast by not refreshing demo data on
+load by default.
 Run this script to *pre-warm* that work — e.g. on a schedule — so the first
-visitor sees current data without waiting for the on-load pass, or so the demo
-is current even if nobody has opened it for a while.
+visitor sees current data without waiting, or so the demo is current even if
+nobody has opened it for a while.
 
 It is idempotent: it only appends missing calendar days and re-generates recent
 recommendations, never overwriting real operator entries.

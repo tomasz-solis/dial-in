@@ -13,7 +13,9 @@ import streamlit as st
 import app
 from dialin import formatting
 from dialin import ui_components as ui
+from dialin import views as app_views
 from dialin.pos_import import DailySalesRollup, PosImportError, PosImportPreview
+from dialin.views import closeout, performance, service, setup, today
 
 
 def test_app_exposes_main() -> None:
@@ -22,10 +24,52 @@ def test_app_exposes_main() -> None:
     assert callable(app.main)
 
 
+def test_active_view_renderer_calls_only_selected_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The app should not execute inactive view bodies during one render."""
+
+    calls: list[str] = []
+    location = {"location_id": "loc_fadri_main"}
+
+    for view_name in ("today", "closeout", "performance", "service", "setup"):
+        view = getattr(app_views, view_name)
+
+        def fake_render(*_: object, _view_name: str = view_name, **__: object) -> None:
+            calls.append(_view_name)
+
+        monkeypatch.setattr(view, "render", fake_render)
+
+    app._render_active_view(
+        active_view="Service",
+        database_url="postgresql://example",
+        account_id="acct_fadri",
+        username="demo",
+        location=location,
+        closeout_date=date(2026, 6, 13),
+        target_date=date(2026, 6, 14),
+    )
+
+    assert calls == ["service"]
+
+
+def test_demo_refresh_on_load_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hosted app should not refresh demo data during startup by default."""
+
+    monkeypatch.delenv("DIALIN_DEMO_REFRESH_ON_LOAD", raising=False)
+
+    assert app._demo_refresh_on_load_enabled() is False
+
+    monkeypatch.setenv("DIALIN_DEMO_REFRESH_ON_LOAD", "true")
+
+    assert app._demo_refresh_on_load_enabled() is True
+
+
 def test_plotly_charts_use_explicit_keys() -> None:
     """Streamlit Plotly charts should not rely on duplicate-prone auto IDs."""
 
-    source = inspect.getsource(app)
+    source = "".join(
+        inspect.getsource(module)
+        for module in (closeout, performance, service, setup, today)
+    )
     chart_calls = source.count("st.plotly_chart(")
 
     assert chart_calls > 0
@@ -150,7 +194,7 @@ def test_season_label_uses_demo_tourism_bands() -> None:
 def test_hero_prep_tiles_keep_categories_separate() -> None:
     """Command Center hero prep values should not collapse into one long headline."""
 
-    html = app._hero_prep_tiles(
+    html = today._hero_prep_tiles(
         [
             {
                 "category": "sweet",
@@ -192,7 +236,7 @@ def test_reason_sentence_names_weather_event_and_direction() -> None:
         "events": [{"event_name": "Weekly market"}],
     }
 
-    sentence = app._reason_sentence(rows, context, date(2026, 6, 13))
+    sentence = today._reason_sentence(rows, context, date(2026, 6, 13))
 
     assert sentence == "Sunny saturday plus Weekly market — expect a busier day than usual."
 
@@ -200,7 +244,7 @@ def test_reason_sentence_names_weather_event_and_direction() -> None:
 def test_reason_sentence_stays_neutral_without_drivers() -> None:
     """A day without external lift should not be sold as busier."""
 
-    sentence = app._reason_sentence(
+    sentence = today._reason_sentence(
         [{"top_drivers": []}],
         {"weather": None, "events": []},
         date(2026, 6, 11),
@@ -224,7 +268,7 @@ def test_service_window_formatting_handles_open_and_closed_days() -> None:
 def test_intraday_sellout_rows_show_time_before_close() -> None:
     """Sellout rows should compare last-sale time to closing time."""
 
-    rows = app._intraday_sellout_rows(
+    rows = service._intraday_sellout_rows(
         [{"category": "sweet", "sold": 42, "prepared": 42, "time_last_sale": time(13, 30)}],
         time(16, 0),
     )
@@ -243,7 +287,7 @@ def test_intraday_sellout_rows_show_time_before_close() -> None:
 def test_stockout_windows_use_known_last_sale_until_close() -> None:
     """Pressure overlays should use explicit last-sale evidence only."""
 
-    windows = app._stockout_windows(
+    windows = service._stockout_windows(
         [
             {"category": "sweet", "time_last_sale": time(12, 20)},
             {"category": "savory", "time_last_sale": None},
@@ -266,17 +310,17 @@ def test_demand_flow_combines_empty_evidence(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(st, "markdown", fake_markdown)
     monkeypatch.setattr(
-        app,
+        service,
         "_render_pressure_chart",
         lambda *_args, **_kwargs: pytest.fail("pressure chart should not render"),
     )
     monkeypatch.setattr(
-        app,
+        service,
         "_render_sellout_snapshot",
         lambda *_args, **_kwargs: pytest.fail("sellout snapshot should not render"),
     )
 
-    app._render_demand_flow([], [], time(16, 0), "Expected service pressure", "test_key")
+    service._render_demand_flow([], [], time(16, 0), "Expected service pressure", "test_key")
 
     assert len(markdown_calls) == 1
     assert "No demand-flow evidence" in markdown_calls[0]
@@ -286,7 +330,7 @@ def test_demand_flow_combines_empty_evidence(monkeypatch: pytest.MonkeyPatch) ->
 def test_workflow_rows_keep_daily_flow_short() -> None:
     """Workflow guidance should stay compact enough for an app tab."""
 
-    rows = app._workflow_rows()
+    rows = setup._workflow_rows()
 
     assert len(rows) == 6
     assert rows[0]["moment"] == "Before service"
@@ -311,7 +355,7 @@ def test_import_summary_rows_show_apply_status() -> None:
         mapped_totals={"drinks": 2, "sweet": 0, "savory": 0},
     )
 
-    assert app._import_summary_rows(preview) == [
+    assert setup._import_summary_rows(preview) == [
         {
             "date range": "2026-05-31 to 2026-06-01",
             "rows read": 3,
@@ -321,7 +365,7 @@ def test_import_summary_rows_show_apply_status() -> None:
             "can apply": "yes",
         }
     ]
-    assert app._import_error_rows(preview) == [
+    assert setup._import_error_rows(preview) == [
         {"row": 4, "reason": "no category match", "raw row": '{"Item": "Unknown"}'}
     ]
 
@@ -339,7 +383,7 @@ def test_pos_sales_defaults_prefill_sold_when_closeout_is_missing() -> None:
         )
     }
 
-    assert app._pos_sales_defaults(frames, date(2026, 5, 31)) == {
+    assert closeout._pos_sales_defaults(frames, date(2026, 5, 31)) == {
         "sweet": 42,
         "savory": 16,
     }
@@ -348,7 +392,7 @@ def test_pos_sales_defaults_prefill_sold_when_closeout_is_missing() -> None:
 def test_scorecard_summary_labels_waste_proxy_delta() -> None:
     """The command center should label proxy savings without overstating accuracy."""
 
-    summary = app._scorecard_summary(
+    summary = performance._scorecard_summary(
         {
             "rows": [{"date": date(2026, 5, 31)}],
             "actual_waste": 18,
@@ -368,7 +412,7 @@ def test_scorecard_summary_labels_waste_proxy_delta() -> None:
 def test_accuracy_frame_uses_observed_proxy_metrics() -> None:
     """Accuracy rows should compare recommendations to observed closeout rows."""
 
-    frame = app._accuracy_frame(
+    frame = performance._accuracy_frame(
         [
             {
                 "date": date(2026, 5, 31),
@@ -412,7 +456,7 @@ def test_entry_defaults_preserve_existing_sellout_time() -> None:
         ),
     }
 
-    defaults = app._entry_defaults(frames, date(2026, 5, 31))
+    defaults = closeout._entry_defaults(frames, date(2026, 5, 31))
 
     assert defaults["sweet_sold_out"] is True
     assert defaults["sweet_time_last_sale"] == time(11, 15)
@@ -421,7 +465,7 @@ def test_entry_defaults_preserve_existing_sellout_time() -> None:
 def test_default_stockout_time_uses_near_close() -> None:
     """The sellout-time default should sit near closing rather than early service."""
 
-    assert app._default_stockout_time(time(13, 0)) == time(12, 30)
+    assert closeout._default_stockout_time(time(13, 0)) == time(12, 30)
 
 
 def test_source_label_removes_hyphenated_title_case() -> None:
@@ -435,6 +479,6 @@ def test_resolved_stockout_time_requires_both_evidence_flags() -> None:
 
     sale_time = time(11, 15)
 
-    assert app._resolved_stockout_time(True, True, sale_time) == sale_time
-    assert app._resolved_stockout_time(True, False, sale_time) is None
-    assert app._resolved_stockout_time(False, True, sale_time) is None
+    assert closeout._resolved_stockout_time(True, True, sale_time) == sale_time
+    assert closeout._resolved_stockout_time(True, False, sale_time) is None
+    assert closeout._resolved_stockout_time(False, True, sale_time) is None

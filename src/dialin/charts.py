@@ -16,6 +16,9 @@ GREEN = "#22a879"
 GRAY = "#9ca3af"
 RED = "#d24b3f"
 
+# Shared Streamlit ``st.plotly_chart`` config: no toolbar, responsive sizing.
+PLOTLY_CONFIG: dict[str, bool] = {"displayModeBar": False, "responsive": True}
+
 
 def pressure_figure(
     curve: list[dict[str, Any]],

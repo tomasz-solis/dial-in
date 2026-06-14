@@ -65,9 +65,10 @@ The seeded demo accounts are:
 ## Keeping the demo fresh
 
 The synthetic data has a finite timeline, so it would otherwise look stale a few days
-after it is generated. The app self-heals on load: `ensure_demo_data_fresh` extends the
-synthetic history up to the current date and regenerates recent recommendations whenever
-a session starts, so a shared link is current whenever someone opens it.
+after it is generated. The deployed app is kept current by the scheduled
+`.github/workflows/refresh-demo-data.yml` workflow, which runs
+`scripts/refresh_demo_data.py` daily. Add a GitHub Actions repository secret named
+`DATABASE_URL` that uses the low-privilege `dialin_app` role.
 
 To pre-warm that work (so the first visitor does not wait) or to keep a deployed demo
 current even when nobody has opened it, run the refresh script. It is idempotent — it only
@@ -85,6 +86,10 @@ before invoking it if `uv` needs to re-sync the environment, since a running pro
 the virtualenv on Windows. For a hosted demo with no built-in scheduler (e.g. Streamlit
 Community Cloud), run it on a schedule from elsewhere — Windows Task Scheduler, macOS
 `launchd`/cron, or a daily GitHub Action with `DATABASE_URL` set as a secret.
+
+For emergency self-healing during a manual demo, set `DIALIN_DEMO_REFRESH_ON_LOAD=true`
+in Streamlit secrets or the local environment. Leave it unset in production so visitors do
+not pay the refresh cost during app startup.
 
 ## Checks
 
