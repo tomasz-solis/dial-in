@@ -10,7 +10,6 @@ import streamlit as st
 
 from dialin import charts
 from dialin import ui_components as ui
-from dialin.charts import PLOTLY_CONFIG
 from dialin.formatting import (
     format_adherence,
     format_percent,
@@ -30,6 +29,8 @@ from dialin.streamlit_cache import (
     load_truth_demand,
     scorecard,
 )
+
+PLOTLY_CONFIG: dict[str, bool] = {"displayModeBar": False, "responsive": True}
 
 
 def render(database_url: str, account_id: str, location_id: str) -> None:

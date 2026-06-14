@@ -10,7 +10,6 @@ import streamlit as st
 
 from dialin import charts
 from dialin import ui_components as ui
-from dialin.charts import PLOTLY_CONFIG
 from dialin.formatting import (
     format_clock,
     format_minutes_before_close,
@@ -21,6 +20,8 @@ from dialin.formatting import (
 from dialin.streamlit_cache import (
     fetch_intraday_demo,
 )
+
+PLOTLY_CONFIG: dict[str, bool] = {"displayModeBar": False, "responsive": True}
 
 
 def render(
