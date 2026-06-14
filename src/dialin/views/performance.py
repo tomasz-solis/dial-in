@@ -36,6 +36,17 @@ PLOTLY_CONFIG: dict[str, bool] = {"displayModeBar": False, "responsive": True}
 def render(database_url: str, account_id: str, location_id: str) -> None:
     """Render the How-it's-doing tab: model quality, proxies, and corrections."""
 
+    st.subheader("Accuracy and business impact")
+    st.caption(
+        "This view loads matched recommendations, closeouts, baselines, and demo truth metrics."
+    )
+    load_key = f"load_performance:{account_id}:{location_id}"
+    if st.button("Load analysis", type="primary", key=f"{load_key}:button"):
+        st.session_state[load_key] = True
+    if st.session_state.get(load_key) is not True:
+        st.info("Load the analysis when you need the full model-quality readout.")
+        return
+
     _render_accuracy_tab(database_url, account_id, location_id)
     _render_correction_audit(database_url, account_id, location_id)
 
@@ -45,7 +56,6 @@ def _render_accuracy_tab(database_url: str, account_id: str, location_id: str) -
 
     card = scorecard(database_url, account_id, location_id)
     frame = _accuracy_frame(card["rows"])
-    st.subheader("Accuracy and business impact")
     st.caption(
         "These are observed proxies. Sold-out days hide true demand, so the app does not "
         "treat sales alone as full forecast accuracy."

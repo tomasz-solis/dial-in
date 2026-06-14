@@ -23,10 +23,7 @@ from dialin.repository import (
 )
 from dialin.streamlit_cache import (
     clear_cached_reads,
-    fetch_history_frames,
-    fetch_intraday_demo,
-    fetch_recommendations_for_date,
-    latest_business_date,
+    fetch_closeout_payload,
 )
 
 
@@ -40,21 +37,17 @@ def render(
     """Render the manual v1 end-of-day entry form."""
 
     location_id = str(location["location_id"])
-    frames = fetch_history_frames(database_url, account_id, location_id)
+    payload = fetch_closeout_payload(database_url, account_id, location_id, business_date)
+    frames = payload["frames"]
     defaults = _entry_defaults(frames, business_date)
-    recommendation_rows = fetch_recommendations_for_date(
-        database_url,
-        account_id,
-        location_id,
-        business_date,
-    )
+    recommendation_rows = payload["recommendations"]
     recommendations_by_category = {
         str(row["category"]): row for row in recommendation_rows if row.get("category") is not None
     }
-    flow = fetch_intraday_demo(database_url, account_id, location_id, business_date)
+    flow = payload["flow"]
     default_stockout_time = _default_stockout_time(flow["hours"].get("close_time"))
 
-    latest_generated = latest_business_date(database_url, account_id, location_id)
+    latest_generated = payload["latest_date"]
     target_date = business_date + timedelta(days=1)
     if latest_generated is not None and business_date <= latest_generated:
         closeout_mode = "Replay"

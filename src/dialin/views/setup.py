@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, time, timedelta
+from datetime import date, time
 from typing import Any
 
 import pandas as pd
@@ -34,11 +34,9 @@ from dialin.repository import (
     upsert_location_hours,
 )
 from dialin.streamlit_cache import (
+    SetupPayload,
     clear_cached_reads,
-    fetch_category_economics,
-    fetch_events_for_window,
-    fetch_location_hours_plan,
-    fetch_recent_pos_import_runs,
+    fetch_setup_payload,
 )
 
 DEFAULT_DRINK_KEYWORDS = (
@@ -57,8 +55,10 @@ def render(
 ) -> None:
     """Render the Setup tab: hours, events, economics, workflow, and POS import."""
 
-    _render_setup_tab(database_url, account_id, location, target_date)
-    _render_import_tab(database_url, account_id, username, location)
+    location_id = str(location["location_id"])
+    payload = fetch_setup_payload(database_url, account_id, location_id, target_date)
+    _render_setup_tab(database_url, account_id, location, target_date, payload)
+    _render_import_tab(database_url, account_id, username, location, payload["recent_imports"])
 
 
 def _render_setup_tab(
@@ -66,6 +66,7 @@ def _render_setup_tab(
     account_id: str,
     location: dict[str, Any],
     target_date: date,
+    payload: SetupPayload,
 ) -> None:
     """Render location setup, context logging, and economics controls."""
 
@@ -75,9 +76,27 @@ def _render_setup_tab(
         "Season is derived from the calendar. Weather comes from the loaded forecast rows. "
         "Events and opening hours are owner-controlled here."
     )
-    _render_hours_setup(database_url, account_id, location_id, target_date)
-    _render_event_setup(database_url, account_id, location_id, target_date)
-    _render_economics_setup(database_url, account_id, location_id, target_date)
+    _render_hours_setup(
+        database_url,
+        account_id,
+        location_id,
+        target_date,
+        payload["hours"],
+    )
+    _render_event_setup(
+        database_url,
+        account_id,
+        location_id,
+        target_date,
+        payload["events"],
+    )
+    _render_economics_setup(
+        database_url,
+        account_id,
+        location_id,
+        target_date,
+        payload["economics"],
+    )
     with st.expander("Daily workflow reference"):
         st.dataframe(pd.DataFrame(_workflow_rows()), hide_index=True, width="stretch")
 
@@ -87,10 +106,10 @@ def _render_hours_setup(
     account_id: str,
     location_id: str,
     target_date: date,
+    rows: list[dict[str, Any]],
 ) -> None:
     """Render and save the effective weekly opening-hours plan."""
 
-    rows = fetch_location_hours_plan(database_url, account_id, location_id, target_date)
     rows_by_day = {int(row["day_of_week"]): row for row in rows}
     st.markdown("#### Opening hours")
     with st.form("opening_hours_setup"):
@@ -168,6 +187,7 @@ def _render_event_setup(
     account_id: str,
     location_id: str,
     target_date: date,
+    events: list[dict[str, Any]],
 ) -> None:
     """Render manual local event logging for recommendation context."""
 
@@ -204,13 +224,6 @@ def _render_event_setup(
         st.success("Event logged.")
         st.rerun()
 
-    events = fetch_events_for_window(
-        database_url,
-        account_id,
-        location_id,
-        target_date - timedelta(days=14),
-        target_date + timedelta(days=45),
-    )
     if events:
         st.dataframe(pd.DataFrame(_event_display_rows(events)), hide_index=True, width="stretch")
     else:
@@ -225,10 +238,10 @@ def _render_economics_setup(
     account_id: str,
     location_id: str,
     target_date: date,
+    economics_rows: list[dict[str, Any]],
 ) -> None:
     """Render the category economics form that controls service quantiles."""
 
-    economics_rows = fetch_category_economics(database_url, account_id, location_id, target_date)
     if not economics_rows:
         st.warning("No category economics are available for this date.")
         return
@@ -389,6 +402,7 @@ def _render_import_tab(
     account_id: str,
     username: str,
     location: dict[str, Any],
+    recent_imports: list[dict[str, Any]],
 ) -> None:
     """Render CSV POS import preview and apply controls."""
 
@@ -397,7 +411,7 @@ def _render_import_tab(
     st.caption("Line-item CSV backfill. Prepared quantities still come from closeout.")
     uploaded = st.file_uploader("CSV file", type=["csv"])
     if uploaded is None:
-        _render_recent_pos_imports(database_url, account_id, location_id)
+        _render_recent_pos_imports(recent_imports)
         return
 
     try:
@@ -481,7 +495,7 @@ def _render_import_tab(
             st.rerun()
     else:
         st.warning("Import needs at least one mapped drinks row before it can be applied.")
-    _render_recent_pos_imports(database_url, account_id, location_id)
+    _render_recent_pos_imports(recent_imports)
 
 
 def _render_import_preview(preview: PosImportPreview) -> None:
@@ -510,10 +524,9 @@ def _render_import_preview(preview: PosImportPreview) -> None:
             )
 
 
-def _render_recent_pos_imports(database_url: str, account_id: str, location_id: str) -> None:
+def _render_recent_pos_imports(rows: list[dict[str, Any]]) -> None:
     """Render recent POS import runs."""
 
-    rows = fetch_recent_pos_import_runs(database_url, account_id, location_id)
     with st.expander("Recent POS imports"):
         if not rows:
             st.markdown(

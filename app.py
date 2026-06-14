@@ -14,7 +14,6 @@ import streamlit_authenticator as stauth
 from dotenv import load_dotenv
 
 from dialin import ui_components as ui
-from dialin import views
 from dialin.config import Settings, load_settings
 from dialin.demo_freshness import ensure_demo_data_fresh
 from dialin.streamlit_cache import (
@@ -114,19 +113,29 @@ def _render_active_view(
 
     location_id = str(location["location_id"])
     if active_view == "Today":
-        views.today.render(database_url, account_id, location, closeout_date, target_date)
+        from dialin.views import today
+
+        today.render(database_url, account_id, location, closeout_date, target_date)
         return
     if active_view == "Close out":
-        views.closeout.render(database_url, account_id, username, location, closeout_date)
+        from dialin.views import closeout
+
+        closeout.render(database_url, account_id, username, location, closeout_date)
         return
     if active_view == "How it's doing":
-        views.performance.render(database_url, account_id, location_id)
+        from dialin.views import performance
+
+        performance.render(database_url, account_id, location_id)
         return
     if active_view == "Service":
-        views.service.render(database_url, account_id, location_id, closeout_date, target_date)
+        from dialin.views import service
+
+        service.render(database_url, account_id, location_id, closeout_date, target_date)
         return
     if active_view == "Setup":
-        views.setup.render(database_url, account_id, username, location, target_date)
+        from dialin.views import setup
+
+        setup.render(database_url, account_id, username, location, target_date)
         return
     st.error(f"Unknown view: {active_view}")
 
@@ -205,7 +214,7 @@ def _authenticate() -> dict[str, str] | None:
         st.error("Email or password is incorrect.")
         return None
     if authentication_status is None:
-        st.info("Log in to view the synthetic café demo.")
+        st.info("Log in to view the demand prediction.")
         return None
     if username is None:
         st.error("Login succeeded but no username was returned.")
