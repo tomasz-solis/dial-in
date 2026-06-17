@@ -32,6 +32,35 @@ The intended finished webapp has two account types:
 - **Fadri Café account:** same app constraints and decision flow, but powered by real Fadri
   data once available.
 
+### 1.1 Production To Do - Non-Real Forecast Inputs
+
+Before Dial In is used as a daily operating tool for a real cafe, every non-real input that
+can affect a recommendation must be replaced with a real source, confirmed by the owner, or
+clearly labelled as demo/advisory. This is a product requirement, not just documentation.
+
+Open production work:
+- **Weather:** demo weather is generated, not pulled from a weather API. Production needs a
+  real forecast and historical actuals provider, stored with forecast timestamps, actual
+  observed timestamps, stale-data detection, and a seasonal-normal fallback that lowers
+  confidence.
+- **Usage and adherence:** demo closeouts, recommendation adherence, overrides, and health
+  rates are synthetic until real operators use the app. They cannot be used as adoption,
+  adherence, or ROI evidence.
+- **POS sales and traffic:** generated drinks/category sales are placeholders for POS import
+  or owner-entered closeout data. Production must audit import rejects, re-import changes,
+  missing days, and corrections before those rows feed recommendations.
+- **Events, holidays, and tourism season:** generated events and configured seasonal lifts
+  must be replaced with confirmed calendars, owner-approved local events, or clearly marked
+  assumptions. Unconfirmed events should reduce confidence rather than silently lift demand.
+- **Economics:** category prices, COGS, salvage, attached-drink margin, and stockout-cost
+  assumptions are defaults until owner-confirmed. Recommendations using defaults must stay
+  advisory/lower-confidence.
+- **Opening hours, closed days, and menu versions:** demo defaults must become real operating
+  hours, closure review, and menu/regime-break markers so comparable history is not polluted.
+- **Replay, savings, and scorecards:** synthetic replay is not proof of business impact. Real
+  value claims require held-out real data, baseline comparison, calibration checks, and the
+  model gates in Section 6.4.
+
 Independent cafés decide food prep by gut. The decision is high-frequency (daily), irreversible
 (fresh food can't be un-baked), and asymmetric (running out costs more than throwing out).
 Owners get it wrong in both directions and often have no time to analyse why.
