@@ -590,5 +590,26 @@ def app_styles() -> str:
             padding: 0.9rem;
         }
     }
+    @media (max-width: 480px) {
+        /* One-handed phone use: collapse remaining multi-column grids, shrink the
+           biggest numerals so hero tiles and metric cards never overflow. */
+        .block-container { padding-left: 0.7rem; padding-right: 0.7rem; }
+        .di-closeout-status { grid-template-columns: 1fr; }
+        .di-hero-prep-number { font-size: 2.6rem; }
+        .di-hero-prep-tile {
+            grid-template-columns: 1fr;
+            gap: 0.35rem;
+            text-align: left;
+        }
+        .di-card-value { font-size: 2.5rem; }
+        .di-metric-value { font-size: 2rem; }
+        .di-flow-value { font-size: 2rem; }
+        .di-date-row {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.1rem;
+        }
+        .di-date-row strong { white-space: normal; }
+    }
     </style>
     """

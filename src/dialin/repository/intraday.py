@@ -94,17 +94,28 @@ def fetch_intraday_demo(
         history_rows,
         business_date,
     )
+    curve = build_intraday_pressure_curve(
+        hours.get("open_time"),
+        hours.get("close_time"),
+        expected_drinks,
+    )
+    close_time = hours.get("close_time")
+    enriched_sellouts = [
+        {
+            **row,
+            "modelled_lost_sales": estimate_lost_sales(
+                curve, float(row["prepared"]), row.get("time_last_sale"), close_time
+            ),
+        }
+        for row in sellouts
+    ]
     return {
         "business_date": business_date,
         "hours": hours,
         "expected_drinks": expected_drinks,
         "expected_source": expected_source,
-        "curve": build_intraday_pressure_curve(
-            hours.get("open_time"),
-            hours.get("close_time"),
-            expected_drinks,
-        ),
-        "sellouts": sellouts,
+        "curve": curve,
+        "sellouts": enriched_sellouts,
     }
 
 
@@ -171,6 +182,76 @@ def build_intraday_pressure_curve(
         }
         for bucket_start, _bucket_end, weight in buckets
     ]
+
+
+def cumulative_traffic_fraction(
+    curve: list[dict[str, Any]], minutes: int | None
+) -> float | None:
+    """Return the share of the day's expected drinks accumulated by ``minutes``.
+
+    Linearly interpolates within the half-hour bucket that contains ``minutes``.
+    Returns ``None`` when there is no curve or no traffic.
+    """
+
+    if not curve or minutes is None:
+        return None
+    points = [
+        (_minutes_from_time(bucket["time"]), float(bucket["expected_drinks"])) for bucket in curve
+    ]
+    total = sum(drinks for _start, drinks in points)
+    if total <= 0:
+        return None
+    cumulative = 0.0
+    for index, (start, drinks) in enumerate(points):
+        if start is None:
+            continue
+        end = points[index + 1][0] if index + 1 < len(points) else start + 30
+        end = start + 30 if end is None else end
+        if minutes >= end:
+            cumulative += drinks
+        elif minutes <= start:
+            break
+        else:
+            cumulative += drinks * (minutes - start) / max(end - start, 1)
+            break
+    return cumulative / total
+
+
+def estimate_lost_sales(
+    curve: list[dict[str, Any]],
+    prepared: float,
+    last_sale: Any,
+    close_time: Any,
+    *,
+    min_fraction: float = 0.1,
+) -> dict[str, Any] | None:
+    """Estimate full-day demand and lost units from an observed sellout time.
+
+    This is a *modelled, illustrative* estimate (PRD sections 10.10, 12): it uses
+    the observed ``last_sale`` time (real POS/manual evidence) and the demo daily
+    traffic curve to infer where demand would have topped out. If a category sold
+    its ``prepared`` units by the time a fraction ``f`` of the day's traffic had
+    arrived, full-day demand is about ``prepared / f`` and roughly
+    ``prepared * (1/f - 1)`` units were lost in the remaining window. Returns
+    ``None`` without an observed last-sale time, so no sellout is invented.
+    """
+
+    minutes = _minutes_from_time(last_sale)
+    if minutes is None:
+        return None
+    fraction = cumulative_traffic_fraction(curve, minutes)
+    if fraction is None or fraction < min_fraction:
+        return None
+    estimated_demand = prepared / fraction
+    close_minutes = _minutes_from_time(close_time)
+    remaining = None if close_minutes is None else max(close_minutes - minutes, 0)
+    return {
+        "estimated_full_day_demand": round(estimated_demand, 1),
+        "lost_units": round(max(estimated_demand - prepared, 0.0), 1),
+        "remaining_minutes": remaining,
+        "sellout_clock": _format_minutes(minutes),
+        "basis": "modelled from observed last-sale time and the daily traffic curve",
+    }
 
 
 def _minutes_from_time(value: Any) -> int | None:

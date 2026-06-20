@@ -190,6 +190,8 @@ def _intraday_sellout_rows(
         minutes_before_close = (
             None if close_minutes is None or sale_minutes is None else close_minutes - sale_minutes
         )
+        estimate = row.get("modelled_lost_sales") or {}
+        lost = estimate.get("lost_units")
         display_rows.append(
             {
                 "category": str(row["category"]).title(),
@@ -197,6 +199,7 @@ def _intraday_sellout_rows(
                 "prepared": int(row["prepared"]),
                 "last sale": format_clock(sale_time),
                 "before close": format_minutes_before_close(minutes_before_close),
+                "est. lost (modelled)": "-" if lost is None else f"~{lost:g}",
             }
         )
     return display_rows
