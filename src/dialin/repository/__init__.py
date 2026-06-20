@@ -32,6 +32,15 @@ from dialin.repository.locations import (
     list_locations,
     upsert_location_hours,
 )
+from dialin.repository.pilot import (
+    PILOT_CHECKLIST_FIELDS,
+    PILOT_PHASES,
+    fetch_pilot_profile,
+    fetch_pilot_windows,
+    phase_for_date,
+    upsert_pilot_profile,
+    upsert_pilot_window,
+)
 from dialin.repository.pos import apply_pos_import, fetch_recent_pos_import_runs
 from dialin.repository.reads import (
     fetch_data_corrections,
@@ -54,6 +63,8 @@ from dialin.repository.recommendations import (
 
 __all__ = [
     "OVERRIDE_REASON_OPTIONS",
+    "PILOT_CHECKLIST_FIELDS",
+    "PILOT_PHASES",
     "apply_pos_import",
     "build_intraday_pressure_curve",
     "correction_changes",
@@ -69,6 +80,8 @@ __all__ = [
     "fetch_intraday_demo",
     "fetch_latest_recommendations",
     "fetch_location_hours_plan",
+    "fetch_pilot_profile",
+    "fetch_pilot_windows",
     "fetch_recent_pos_import_runs",
     "fetch_recommendation_build_payload",
     "fetch_recommendation_context",
@@ -84,10 +97,13 @@ __all__ = [
     "normalize_menu_version",
     "normalize_override_reason",
     "persist_recommendations",
+    "phase_for_date",
     "recommendation_adhered",
     "scorecard",
     "supersede_active_recommendations",
     "upsert_category_economics",
     "upsert_closeout",
     "upsert_location_hours",
+    "upsert_pilot_profile",
+    "upsert_pilot_window",
 ]

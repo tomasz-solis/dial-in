@@ -27,11 +27,15 @@ from dialin.pos_import import (
     preview_pos_import,
 )
 from dialin.repository import (
+    PILOT_CHECKLIST_FIELDS,
+    PILOT_PHASES,
     apply_pos_import,
     economics_service_quantile,
     insert_manual_event,
     upsert_category_economics,
     upsert_location_hours,
+    upsert_pilot_profile,
+    upsert_pilot_window,
 )
 from dialin.streamlit_cache import (
     SetupPayload,
@@ -99,8 +103,131 @@ def _render_setup_tab(
         target_date,
         payload["economics"],
     )
+    _render_pilot_setup(
+        database_url,
+        account_id,
+        location_id,
+        target_date,
+        payload["pilot_windows"],
+        payload["pilot_profile"],
+    )
     with st.expander("Daily workflow reference"):
         st.dataframe(pd.DataFrame(_workflow_rows()), hide_index=True, width="stretch")
+
+
+def _render_pilot_setup(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+    target_date: date,
+    windows: list[dict[str, Any]],
+    profile: dict[str, Any] | None,
+) -> None:
+    """Render pilot phase windows and the pilot setup checklist (Phase 12)."""
+
+    with st.expander("Pilot setup (baseline/live windows + checklist)"):
+        st.caption(
+            "Optional, for a real pilot. Windows let the report separate the café's own "
+            "baseline from the live Dial In window; the checklist records context needed "
+            "before any value claim. Neither changes a recommendation."
+        )
+        _render_pilot_window_form(database_url, account_id, location_id, target_date, windows)
+        _render_pilot_checklist_form(database_url, account_id, location_id, profile)
+
+
+def _render_pilot_window_form(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+    target_date: date,
+    windows: list[dict[str, Any]],
+) -> None:
+    """Render the add-window form and the list of existing pilot windows."""
+
+    if windows:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "phase": row["phase"],
+                        "start": row["start_date"],
+                        "end": row["end_date"] or "open",
+                        "note": row.get("note") or "",
+                    }
+                    for row in windows
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+    with st.form("pilot_window_form"):
+        st.markdown('<div class="di-form-section"><strong>Add a phase window</strong></div>',
+                    unsafe_allow_html=True)
+        phase = st.selectbox("Phase", PILOT_PHASES, key="pilot_phase")
+        cols = st.columns(2)
+        start = cols[0].date_input("Start date", value=target_date, key="pilot_start")
+        ongoing = cols[1].checkbox("Ongoing (no end date)", value=True, key="pilot_ongoing")
+        end = (
+            None
+            if ongoing
+            else cols[1].date_input("End date", value=target_date, key="pilot_end")
+        )
+        note = st.text_input("Note (optional)", key="pilot_note")
+        submitted = st.form_submit_button("Save window")
+    if submitted:
+        try:
+            upsert_pilot_window(
+                database_url, account_id, location_id, str(phase),
+                start, end, note.strip() or None,
+            )
+        except ValueError as error:
+            st.error(str(error))
+        else:
+            clear_cached_reads()
+            st.success(f"Saved {phase} window.")
+            st.rerun()
+
+
+def _render_pilot_checklist_form(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+    profile: dict[str, Any] | None,
+) -> None:
+    """Render the pilot setup checklist form backed by the pilot profile."""
+
+    responses = dict(profile["responses"]) if profile and profile.get("responses") else {}
+    source = str(profile["values_source"]) if profile else "default"
+    st.markdown(
+        f'<div class="di-form-section"><strong>Pilot checklist</strong>'
+        f'<p>Current source: {source}</p></div>',
+        unsafe_allow_html=True,
+    )
+    with st.form("pilot_checklist_form"):
+        new_responses: dict[str, Any] = {}
+        for field in PILOT_CHECKLIST_FIELDS:
+            key, label, kind = field["key"], field["label"], field["kind"]
+            existing = responses.get(key)
+            if kind == "number":
+                new_responses[key] = st.number_input(
+                    label, value=float(existing) if existing is not None else 0.0,
+                    min_value=0.0, key=f"pilot_{key}",
+                )
+            elif kind == "bool":
+                new_responses[key] = st.checkbox(
+                    label, value=bool(existing), key=f"pilot_{key}"
+                )
+            else:
+                new_responses[key] = st.text_input(
+                    label, value=str(existing) if existing is not None else "",
+                    key=f"pilot_{key}",
+                )
+        submitted = st.form_submit_button("Save checklist")
+    if submitted:
+        upsert_pilot_profile(database_url, account_id, location_id, new_responses)
+        clear_cached_reads()
+        st.success("Saved pilot checklist.")
+        st.rerun()
 
 
 def _render_readiness_summary(payload: SetupPayload) -> None:

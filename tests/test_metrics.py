@@ -322,6 +322,7 @@ def test_model_gate_report_starts_categories_in_shadow() -> None:
             "date": [dates[4], dates[5]],
             "category": ["sweet", "sweet"],
             "recommended_prep": [48, 50],
+            "demand_p50": [47, 49],
             "service_quantile": [0.78, 0.78],
             "sold": [48, 50],
             "sold_out": [False, False],
@@ -336,3 +337,57 @@ def test_model_gate_report_starts_categories_in_shadow() -> None:
     assert report[0]["category"] == "sweet"
     assert report[0]["status"] == "shadow"
     assert report[0]["evaluated_days"] == 2
+    assert report[0]["signed_error"] == pytest.approx(-1.0)
+
+
+def test_observed_cost_excludes_censored_rows() -> None:
+    """A sales cap must not be treated as realised demand in a money comparison."""
+
+    history = _weekly_sweet_history()
+    dates = pd.date_range("2026-01-03", periods=6, freq="7D").date
+    matched = pd.DataFrame(
+        {
+            "date": [dates[4], dates[5]],
+            "category": ["sweet", "sweet"],
+            "recommended_prep": [50, 52],
+            "sold": [48, 50],
+            "sold_out": [False, True],
+        }
+    )
+
+    cost = expected_misprep_cost(
+        matched,
+        history,
+        {"sweet": (3.2, 0.9)},
+        demand_col="sold",
+        exclude_censored=True,
+    )
+
+    assert cost["rows"] == 1
+    assert cost["dates"] == 1
+    assert cost["excluded_censored_rows"] == 1
+
+
+def test_model_gate_bias_uses_median_demand_not_buffered_prep() -> None:
+    """Economic service-level buffer is intentional and must not count as forecast bias."""
+
+    history = _weekly_sweet_history()
+    dates = pd.date_range("2026-01-03", periods=6, freq="7D").date
+    matched = pd.DataFrame(
+        {
+            "date": [dates[4], dates[5]],
+            "category": ["sweet", "sweet"],
+            "recommended_prep": [60, 62],
+            "demand_p50": [48, 50],
+            "service_quantile": [0.78, 0.78],
+            "sold": [48, 50],
+            "sold_out": [False, False],
+            "demand_p_lower": [44, 46],
+            "demand_p_upper": [52, 54],
+            "confidence": ["Medium", "Medium"],
+        }
+    )
+
+    report = model_gate_report(matched, history, {"sweet": (3.2, 0.9)})
+
+    assert report[0]["signed_error"] == pytest.approx(0.0)

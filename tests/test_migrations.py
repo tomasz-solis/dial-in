@@ -107,6 +107,18 @@ def test_init_schema_includes_migration_ledger() -> None:
     assert "filename text PRIMARY KEY" in init_sql
 
 
+def test_product_integrity_migrations_track_weather_source_and_unique_pilot_phases() -> None:
+    init_sql = Path("migrations/001_init.sql").read_text(encoding="utf-8")
+    weather_sql = Path("migrations/012_weather_provenance.sql").read_text(encoding="utf-8")
+    pilot_sql = Path("migrations/013_pilot_window_integrity.sql").read_text(encoding="utf-8")
+
+    assert "forecast_source text NOT NULL DEFAULT 'legacy'" in init_sql
+    assert "forecast_source IN ('legacy', 'synthetic_demo', 'open_meteo')" in init_sql
+    assert "ADD COLUMN IF NOT EXISTS forecast_source" in weather_sql
+    assert "locations_latitude_check" in weather_sql
+    assert "idx_pilot_windows_unique_phase" in pilot_sql
+
+
 def test_ci_runs_quality_type_test_and_realism_gates() -> None:
     """The default CI workflow should gate the daily-product quality checks."""
 
@@ -117,3 +129,14 @@ def test_ci_runs_quality_type_test_and_realism_gates() -> None:
     assert "uv run pytest" in ci_sql
     assert "uv run python scripts/generate_synthetic_data.py --seed 20260531" in ci_sql
     assert "uv run python scripts/validate_realism.py data/generated" in ci_sql
+    assert "permissions:\n  contents: read" in ci_sql
+    assert "timeout-minutes: 15" in ci_sql
+
+
+def test_scheduled_refresh_is_serialized_and_bounded() -> None:
+    workflow = Path(".github/workflows/refresh-demo-data.yml").read_text(encoding="utf-8")
+
+    assert "group: refresh-demo-data" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert "timeout-minutes: 15" in workflow

@@ -27,6 +27,13 @@ import pandas as pd
 BASELINE_LAG_DAYS = 7
 TRAILING_BASELINE_WEEKS = 4
 
+# PRD section 6.4.3: a calibrated p10-p90 range contains realised demand about
+# 75-85% of the time once enough held-out days exist. The live-ready gate also
+# requires >= 28 evaluated days, so this band is only consulted with enough
+# evidence; before that a category stays in shadow on the evidence check.
+CALIBRATION_TARGET_LOW = 0.75
+CALIBRATION_TARGET_HIGH = 0.85
+
 
 def pinball_loss(actual: float, forecast: float, quantile: float) -> float:
     """Return the quantile (pinball) loss for one forecast at one quantile."""
@@ -244,6 +251,7 @@ def expected_misprep_cost(
     economics: dict[str, tuple[float, float]],
     *,
     demand_col: str,
+    exclude_censored: bool = False,
 ) -> dict[str, Any]:
     """Compare prep *decisions* by expected mis-prep cost (PRD section 6.2).
 
@@ -254,15 +262,17 @@ def expected_misprep_cost(
     a newsvendor forecaster. Baselines are turned into real prep decisions by
     rounding their point forecast up.
 
-    With ``demand_col="sold"`` (observed lens) the cost on sold-out days uses
-    censored sales, which *under*-counts stockout cost, so the model's reported
-    advantage is a conservative lower bound. With ``demand_col="true_demand"``
-    (demo lens) it is exact.
+    Set ``exclude_censored=True`` for the observed ``sold`` lens. A sold-out
+    row only supplies a lower bound on demand, and treating that lower bound as
+    realised demand can change the ordering between two prep decisions; it is
+    not a defensible savings estimate. With ``demand_col="true_demand"`` (demo
+    lens), censored rows can be included because latent demand is known.
     """
 
     empty: dict[str, Any] = {
         "rows": 0,
         "dates": 0,
+        "excluded_censored_rows": 0,
         "demand_basis": demand_col,
         "model_cost_per_day": None,
         "last_week_cost_per_day": None,
@@ -273,7 +283,17 @@ def expected_misprep_cost(
     }
     if matched.empty or not economics:
         return empty
-    frame, _, _ = _with_baselines(matched, category_history, exclude_censored=False)
+    excluded_censored_rows = (
+        int(matched["sold_out"].astype(bool).sum())
+        if exclude_censored and "sold_out" in matched
+        else 0
+    )
+    empty["excluded_censored_rows"] = excluded_censored_rows
+    frame, _, _ = _with_baselines(
+        matched,
+        category_history,
+        exclude_censored=exclude_censored,
+    )
     frame = frame[frame["category"].isin(economics)]
     frame = frame.dropna(subset=[demand_col])
     if frame.empty:
@@ -297,6 +317,7 @@ def expected_misprep_cost(
     return {
         "rows": len(frame),
         "dates": n_dates,
+        "excluded_censored_rows": excluded_censored_rows,
         "demand_basis": demand_col,
         "model_cost_per_day": round(per_day["model"], 2),
         "last_week_cost_per_day": round(per_day["last_week"], 2),
@@ -419,6 +440,39 @@ def suspicious_operational_jumps(
     return pd.DataFrame(rows)
 
 
+def probe_diagnostics(matched: pd.DataFrame) -> dict[str, int]:
+    """Summarize de-censoring probe activity and what it would reveal (demo lens).
+
+    This is a counterfactual read: in the synthetic demo the closeout ``prepared``
+    is fixed gut-prep, so we measure what the *probe recommendation* would reveal
+    if followed. ``revealed_units`` needs ``true_demand`` (synthetic only): we
+    compare demand observable at the probe prep level (``min(true, recommended)``)
+    to demand observable without the lift (``min(true, recommended - extra)``).
+    ``extra_waste`` is the bounded cost side: extra units that reveal nothing.
+    """
+
+    empty = {"probe_days": 0, "extra_units": 0, "revealed_units": 0, "extra_waste": 0}
+    if matched.empty or "probe_active" not in matched.columns:
+        return empty
+    probe = matched[matched["probe_active"] == True].copy()  # noqa: E712
+    if probe.empty:
+        return empty
+    extra = probe["probe_extra_units"].astype(float)
+    result = {"probe_days": int(probe.shape[0]), "extra_units": int(extra.sum())}
+    if {"true_demand", "recommended_prep"}.issubset(probe.columns):
+        true_demand = probe["true_demand"].astype(float)
+        recommended = probe["recommended_prep"].astype(float)
+        observed_with = pd.concat([true_demand, recommended], axis=1).min(axis=1)
+        observed_without = pd.concat([true_demand, recommended - extra], axis=1).min(axis=1)
+        revealed = (observed_with - observed_without).clip(lower=0)
+        result["revealed_units"] = int(revealed.sum())
+        result["extra_waste"] = int((extra - revealed).clip(lower=0).sum())
+    else:
+        result["revealed_units"] = 0
+        result["extra_waste"] = 0
+    return result
+
+
 def model_gate_report(
     matched: pd.DataFrame,
     category_history: pd.DataFrame,
@@ -433,18 +487,33 @@ def model_gate_report(
         history = category_history[category_history["category"] == category]
         evaluation = evaluate_model_vs_baselines(group, history)
         calibration = calibration_coverage(group)
-        cost = expected_misprep_cost(group, history, economics, demand_col="sold")
+        cost = expected_misprep_cost(
+            group,
+            history,
+            economics,
+            demand_col="sold",
+            exclude_censored=True,
+        )
+        uncensored = (
+            group[~group["sold_out"].astype(bool)]
+            if "sold_out" in group
+            else group
+        )
         signed_error = (
-            float((group["recommended_prep"] - group["sold"]).mean())
-            if {"recommended_prep", "sold"}.issubset(group.columns)
-            else 0.0
+            float((uncensored["demand_p50"] - uncensored["sold"]).mean())
+            if not uncensored.empty and {"demand_p50", "sold"}.issubset(uncensored.columns)
+            else float("nan")
         )
         enough_days = int(evaluation["evaluated_dates"]) >= 28
-        calibrated = calibration.get("coverage") is not None and 0.65 <= float(
-            calibration["coverage"]
-        ) <= 0.95
+        calibrated = (
+            calibration.get("coverage") is not None
+            and CALIBRATION_TARGET_LOW <= float(calibration["coverage"]) <= CALIBRATION_TARGET_HIGH
+        )
         low_censoring = float(evaluation.get("censored_share") or 0.0) <= 0.4
-        unbiased = abs(signed_error) <= max(float(group["sold"].mean()) * 0.15, 3.0)
+        unbiased = not math.isnan(signed_error) and abs(signed_error) <= max(
+            float(uncensored["sold"].mean()) * 0.05,
+            1.0,
+        )
         beats = evaluation.get("beats_baselines") is True
         cost_positive = cost.get("beats_baselines") is True
         live_ready = all((enough_days, calibrated, low_censoring, unbiased, beats, cost_positive))
@@ -455,7 +524,7 @@ def model_gate_report(
                 "evaluated_days": int(evaluation["evaluated_dates"]),
                 "beats_baselines": beats,
                 "range_coverage": calibration.get("coverage"),
-                "signed_error": round(signed_error, 2),
+                "signed_error": None if math.isnan(signed_error) else round(signed_error, 2),
                 "censoring_rate": evaluation.get("censored_share"),
                 "expected_cost_beats_baseline": cost_positive,
             }

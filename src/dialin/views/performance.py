@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -10,6 +11,7 @@ import streamlit as st
 
 from dialin import charts
 from dialin import ui_components as ui
+from dialin.demo_freshness import is_demo_location
 from dialin.formatting import (
     format_adherence,
     format_percent,
@@ -22,8 +24,10 @@ from dialin.metrics import (
     evaluate_model_vs_baselines,
     expected_misprep_cost,
     model_gate_report,
+    probe_diagnostics,
     suspicious_operational_jumps,
 )
+from dialin.pilot_report import build_pilot_report_markdown
 from dialin.streamlit_cache import (
     PerformancePayload,
     fetch_performance_payload,
@@ -49,7 +53,47 @@ def render(database_url: str, account_id: str, location_id: str) -> None:
 
     payload = fetch_performance_payload(database_url, account_id, location_id)
     _render_accuracy_tab(payload, account_id, location_id)
+    _render_pilot_report(payload, account_id, location_id)
     _render_correction_audit(payload["corrections"])
+
+
+def _render_pilot_report(
+    payload: PerformancePayload,
+    account_id: str,
+    location_id: str,
+) -> None:
+    """Render the downloadable pilot report (Phase 12)."""
+
+    matched = pd.DataFrame(payload["outcomes"])
+    history = payload["frames"].get("daily_category_metrics", pd.DataFrame())
+    if "input_source" in history.columns:
+        history = history[history["input_source"] != "imputed"]
+    economics = _economics_costs_from_rows(payload["economics"])
+    gates = model_gate_report(matched, history, economics) if not matched.empty else []
+    report_md = build_pilot_report_markdown(
+        account_label=account_id,
+        location_label=location_id,
+        generated_on=date.today(),
+        windows=payload["pilot_windows"],
+        profile=payload["pilot_profile"],
+        gates=gates,
+        scorecard_rows=payload["scorecard"]["rows"],
+        synthetic=is_demo_location(account_id, location_id),
+    )
+    st.markdown("#### Pilot report")
+    st.caption(
+        "Bundle phase windows, model gates, and observed outcomes into one shareable, honest "
+        "report. Define windows and the setup checklist on the Setup tab."
+    )
+    st.download_button(
+        "Download pilot report (Markdown)",
+        data=report_md,
+        file_name=f"dialin-pilot-report-{account_id}-{date.today().isoformat()}.md",
+        mime="text/markdown",
+        key=f"pilot_report:{account_id}:{location_id}",
+    )
+    with st.expander("Preview pilot report"):
+        st.markdown(report_md)
 
 
 def _render_accuracy_tab(
@@ -151,15 +195,21 @@ def _render_model_quality(
 
     st.markdown("#### Is the model earning trust?")
 
-    cost = expected_misprep_cost(matched, history, economics, demand_col="sold")
+    cost = expected_misprep_cost(
+        matched,
+        history,
+        economics,
+        demand_col="sold",
+        exclude_censored=True,
+    )
     _render_cost_cards(cost)
     st.caption(
         "These are modelled euros, not cash in the till. They estimate the money lost each open "
         "day to over-prep (wasted food) and under-prep (missed sales + the drink that rides "
         "along), comparing Dial In's prep against the cheaper of two simple same-weekday rules "
-        "(last week, or the 4-week average). Computed from your category economics on observed "
-        "sales, so sold-out days under-count missed sales — Dial In's edge here is a "
-        "conservative lower bound."
+        "(last week, or the 4-week average). Computed from your category economics on "
+        "uncensored days only. Sold-out rows are excluded because sales reveal only a lower "
+        "bound on demand; the excluded share is shown alongside the model-quality readout."
     )
     st.plotly_chart(
         charts.cost_comparison_figure(cost),
@@ -393,6 +443,7 @@ def _render_truth_quality(
         unsafe_allow_html=True,
     )
     _render_cost_cards(cost)
+    _render_probe_panel(mt)
     truth_left, truth_right = st.columns(2, gap="large")
     with truth_left:
         st.plotly_chart(
@@ -408,6 +459,44 @@ def _render_truth_quality(
             config=PLOTLY_CONFIG,
             key="truth_quality_cost",
         )
+
+
+def _render_probe_panel(mt: pd.DataFrame) -> None:
+    """Render the de-censoring probe summary against synthetic truth (demo only)."""
+
+    probe = probe_diagnostics(mt)
+    if probe["probe_days"] == 0:
+        return
+    st.markdown("#### De-censoring probe (demo only)")
+    st.caption(
+        "On a controlled share of low-risk days the app deliberately prepped a few units "
+        "above the usual number to learn where demand really tops out (PRD section 12). "
+        "Against synthetic truth we can show what that revealed; real cafés see only the "
+        "bounded extra cost, disclosed in advance."
+    )
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.proof_card(
+                    "Probe days",
+                    str(probe["probe_days"]),
+                    "Low-risk days the app tested a higher number.",
+                ),
+                ui.proof_card(
+                    "Hidden demand revealed",
+                    f"{probe['revealed_units']} units",
+                    "True demand observed that a sold-out day would have hidden.",
+                ),
+                ui.proof_card(
+                    "Bounded extra waste",
+                    f"{probe['extra_waste']} units",
+                    f"Cost side of learning, capped per probe day "
+                    f"({probe['extra_units']} extra units prepped total).",
+                ),
+            )
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def _truth_coverage_caption(coverage: dict[str, Any]) -> str:
