@@ -166,10 +166,14 @@ The demo uses a light censoring correction:
 - Comparable days use same weekday history and scale by drinks sold.
 - If there are too few comparable days, fallback demand is `prepared * 1.15`.
 
-This is the current demo method. The companion design describes a richer demo target with
-weather buckets, and the PRD describes the real-data censoring-aware method. Those are separate
-levels on purpose: current demo, intended demo, and real-data path. The current method is enough
-to demonstrate the behavior, not enough to claim production validation.
+This is the demo default (`comparable_day`). The real-data censoring-aware method from the PRD
+is also implemented: `src/dialin/censoring.py` fits a **right-censored Tobit model on
+log-demand** (sold-out days are right-censored at `prepared`) by EM, with numpy only and no
+SciPy, using a centred log-drinks traffic covariate. The engine selects it via
+`build_recommendations(..., censoring_method="tobit")`, and the choice is recorded in each
+recommendation's config snapshot. Per PRD section 11.1 the Tobit path stays advisory/shadow
+until a café's model passes the section 6.4 ship-gate on held-out data — exactly like the demo
+method. The two levels exist on purpose: demo default, and the real-data Tobit path.
 
 ## Forecast Method
 
@@ -192,6 +196,26 @@ Then it applies:
 ```text
 traffic forecast = base traffic * weather multiplier * event multiplier
 ```
+
+Weather is resolved through a provider seam (`src/dialin/weather.py`) rather than read raw. The
+`FrameWeatherProvider` resolves the target-date forecast from the stored `weather` table and
+computes its age from `forecast_made_at`. A forecast older than `STALE_FORECAST_AGE_HOURS`, or a
+missing row (seasonal-normal fallback), is flagged and forces Low confidence — which widens the
+demand range instead of trusting an old number (PRD 11.4).
+
+Forecasts are **real**: `OpenMeteoWeatherProvider` pulls the daily forecast from the Open-Meteo API
+(free, no API key) for each location's coordinates. `scripts/fetch_weather.py` upserts the next few
+days into the `weather` table with `forecast_made_at` set to fetch time and explicit
+`forecast_source`, then backfills historical reanalysis proxies (`temp_actual`/`rain_actual`) for
+recent past days from the ERA5 archive — but only onto Open-Meteo forecast rows, so the synthetic
+generator's historical weather is never touched. The daily refresh workflow runs this **before**
+the internal demo refresh, so the
+regenerated recommendations read the real forecast (the refresh inserts synthetic context weather
+only when none exists). The app reads everything through `FrameWeatherProvider` unchanged, so a
+live next-day recommendation runs on a real forecast; network or parse failures degrade to the
+seasonal-normal fallback rather than raising. The synthetic generator still seeds historical demo
+weather because its synthetic sales were generated from it. Forward-looking forecasts come from
+the live feed; recent outcome values are reanalysis proxies rather than station observations.
 
 Weather multiplier:
 
@@ -359,14 +383,57 @@ The current scorecard can show aggregate proxies:
 
 This is a demo comparison, not validated ROI.
 
-Planned attribution work will add per-day wins/losses, adherence splits, override reasons, and
-baseline metrics before the scorecard is used for any real pilot claim.
+The scorecard now also separates followed vs overridden days, captures override reasons,
+compares against both naive baselines (last-week and trailing-4-week same-weekday) on pinball
+loss and expected mis-prep cost, and reports calibration and per-category shadow/live model
+gates. None of this is presented as validated ROI.
+
+## Pilot Readiness
+
+For a real pilot, the Setup tab can record baseline vs live phase windows and a pilot setup
+checklist (open days, food revenue share, sellout frequency, waste handling, economics
+confirmed, POS export availability). The How-it's-doing tab assembles these, the model gates,
+and the observed scorecard into a downloadable Markdown pilot report that partitions outcomes
+by phase and explicitly separates observed facts, modelled estimates, assumptions, and
+synthetic-demo behaviour. It never emits a validated-ROI claim. See `src/dialin/pilot_report.py`
+and `src/dialin/repository/pilot.py`.
+
+## De-censoring Probe
+
+A chronically sold-out category never reveals its true ceiling, so the upper quantile is
+extrapolated forever. When an account opts in (`accounts.decensor_probe_opt_in`), the engine
+deliberately preps a few units above the usual number on a small, deterministic share of
+low-risk days (no known event, no warm forecast) to observe where demand really tops out. The
+extra is capped (bounded waste), disclosed in the Today view, and recorded on the recommendation
+(`probe_active`, `probe_extra_units`) for review. The Fadri demo account opts in; the dummy
+account does not. The probe only activates above the chronic-censoring threshold (trailing
+sellout rate > 0.38); the current synthetic Fadri profile sells out ~25-29% of days, so it
+stays dormant by design — the probe never adds waste unless a category is genuinely under-prepped
+chronically. See PRD section 12 and `engine._probe_decision`.
 
 ## Known Limits
 
-- The censoring correction is demo-grade.
-- Docker/RLS should be verified locally before touching Neon.
+- The default censoring correction is the demo-grade comparable-day method. The PRD's Tobit
+  real-data path now exists (`src/dialin/censoring.py`, `censoring_method="tobit"`) but, like the
+  demo method, stays advisory until it passes the section 6.4 ship-gate on real held-out data.
+- RLS isolation has DB-backed tests (`tests/test_rls_isolation.py`, opt-in via
+  `TEST_DATABASE_URL`/`TEST_APP_DATABASE_URL`) and has been spot-checked read-only on the
+  hosted database; run them against your target before loading real tenant data.
 - The current Streamlit auth setup is good enough for a demo, not production auth.
 - Synthetic Fadri is fictionalized until real operating bands are provided.
-- There is no POS import yet.
-- There is no SKU-level recommendation yet.
+- The de-censoring probe is bounded and opt-in; in the synthetic demo its "revealed demand"
+  panel is measured against planted truth, which a real café does not have.
+- SKU-level prep is supported by the engine, which never hardcodes `sweet`/`savory` and prices
+  each category at its own service quantile (proven by `tests/test_sku_level.py`); only the demo
+  data and UI are still two categories. Moving to per-SKU prep is a data/config change.
+- The Service tab can now show a *modelled* sellout/lost-sales estimate
+  (`repository/intraday.estimate_lost_sales`): from an observed last-sale time and the demo
+  traffic curve it estimates full-day demand and units lost after a sellout. It is labelled
+  illustrative and returns nothing without an observed last-sale time — it never invents a sellout.
+- The pooled shared environment layer and cold-start prior now have an estimator and an offline
+  training job (`src/dialin/shared_environment.py`, `scripts/train_shared_environment.py`), with
+  the PRD's governance: it reads only the anonymised `shared_layer_features` view, emits
+  parameters (never raw rows), and refuses sparse segments. The two-account synthetic demo is
+  intentionally too sparse to fit one, so the job reports insufficiency by design — the demo has
+  not trained a real shared layer. The engine consumes a fitted layer via
+  `build_recommendations(environment_layer=...)` when one is supplied.

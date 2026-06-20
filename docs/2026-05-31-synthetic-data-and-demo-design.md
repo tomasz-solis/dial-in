@@ -5,6 +5,13 @@
 **Status:** Implementation design (active scaffold)
 **Companion to:** `PRD.md` (v1.3)
 
+> **Implementation update (2026-06).** This is the original point-in-time design; some "not in
+> scope (now)" items have since shipped. Notably the real-data **right-censored Tobit** path
+> (`src/dialin/censoring.py`) and **real weather** via Open-Meteo now exist alongside the
+> censoring-light demo method described below. The demo default is still the comparable-day
+> method; Tobit stays advisory until it clears the PRD §6.4 ship-gate on real data. See
+> `docs/PRD.md` §23 and `docs/Architecture.md` for the current state.
+
 > **Purpose.** Stand up a clickable, login-gated daily demo of Dial In on **synthetic data** while learning Docker, Postgres, synthetic data generation, demand forecasting, uncertainty, and decision-making under asymmetric costs. The demo exists before real Fadri data is available. It demonstrates the **daily use case and the engine's behaviour** — recommendation, censoring story, newsvendor prep quantity, risk flag. It is **not** model validation: planting a demand process and then "recovering" it would be circular. Real-data learning comes from a Fadri account once data is available. The generator and schema are built so nothing here is throwaway — the same provider-neutral Postgres schema and `recommendations` table carry into the Fadri path.
 
 ---

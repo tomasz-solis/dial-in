@@ -39,10 +39,15 @@ can affect a recommendation must be replaced with a real source, confirmed by th
 clearly labelled as demo/advisory. This is a product requirement, not just documentation.
 
 Open production work:
-- **Weather:** demo weather is generated, not pulled from a weather API. Production needs a
-  real forecast and historical actuals provider, stored with forecast timestamps, actual
-  observed timestamps, stale-data detection, and a seasonal-normal fallback that lowers
-  confidence.
+- **Weather:** *done — forecasts are real.* `OpenMeteoWeatherProvider` pulls live forecasts and
+  ERA5 historical reanalysis proxies from the Open-Meteo API; `scripts/fetch_weather.py` writes
+  them to the `weather`
+  table with `forecast_made_at` (scheduled before the daily refresh), and the engine applies
+  forecast-age/stale-data detection with a seasonal-normal fallback that lowers confidence. The
+  synthetic generator still seeds *historical* demo weather (its synthetic sales were generated
+  from it); only forward-looking forecasts are observed feed data. Recent weather outcomes are
+  reanalysis proxies, not station observations. Remaining: event-driven
+  re-fetch when a materially newer forecast arrives (§11), and richer condition mapping.
 - **Usage and adherence:** demo closeouts, recommendation adherence, overrides, and health
   rates are synthetic until real operators use the app. They cannot be used as adoption,
   adherence, or ROI evidence.
@@ -384,8 +389,12 @@ The app is **login-gated** — no anonymous access to data. Pattern mirrors the 
 **Training path — what actually needs cross-account data, and what doesn't.**
 We reject blanket "train on everyone's data". The model is split into three layers, governed differently, because the value of pooling is concentrated and decaying while the trust cost is permanent:
 
-Implementation status: this is the target real-data governance design. The current synthetic
-demo uses fixed demo weather/event/season rules; it has not trained a shared environment layer.
+Implementation status: this is the target real-data governance design. The estimator and the
+privileged offline training job now exist (`src/dialin/shared_environment.py`,
+`scripts/train_shared_environment.py`): they read only the anonymised `shared_layer_features`
+view, emit parameters, and refuse sparse segments. The two-account synthetic demo is
+deliberately too sparse to fit a layer, so the job reports insufficiency and the engine still
+uses the fixed demo weather/event/season rules unless a fitted layer is supplied.
 
 | Layer | What it estimates | Trains on | Why |
 |---|---|---|---|
@@ -710,3 +719,104 @@ the owner's instinct with a model that respects how the decision actually works:
 costs more than throwing out, and you can't manage demand you never observed.
 
 **"What should we prepare tomorrow?"** Everything else is secondary.
+
+---
+
+## 23. Implementation Status & Backlog
+A living snapshot so the PRD's requirements can be read against what is actually built. This is
+the engineering truth; `docs/Architecture.md` has the how, `README.md` the run commands.
+
+### Built and verified
+- **Schema & tenant isolation:** account/location/category grain, `recommendations` lineage
+  (input/config snapshots), and Postgres RLS. DB-backed RLS isolation tests run in CI against a
+  real Postgres (Build Readiness Gate 1 / assumption 7 — §21).
+- **Decision engine (V1):** censoring-corrected attach rate → Negative Binomial demand
+  distribution → newsvendor `q*` prep, with confidence/risk flags and replayable snapshots.
+- **Censored demand:** demo comparable-day method *and* the committed real-data **right-censored
+  Tobit on log-demand** (§12), selectable per call; Tobit stays advisory until the §6.4 ship-gate.
+- **De-censoring probe (§12):** opt-in, chronic-sellout-only, bounded extra units, disclosed.
+- **Real weather (§1.1):** Open-Meteo forecasts + ERA5 reanalysis proxies, persisted with source
+  provenance and read back with
+  forecast-age/staleness → confidence, scheduled before the daily refresh.
+- **Honest measurement (§6):** pinball loss, naive baselines, calibration (75–85% band, §6.4.3),
+  signed error, censoring rate, expected mis-prep cost, and shadow/live model gates.
+- **Attribution (§14):** `prepared`/`adhered`/`override_delta` + override reasons; pilot windows,
+  setup profile, and an exportable pilot report that separates observed/modelled/assumed.
+- **Shared layer (§10.8/§13):** pooled environment-elasticity estimator + cold-start prior +
+  privileged offline job, parameters-only with a sparse-segment refusal (demo is too sparse).
+- **SKU readiness (§15 Phase 8):** engine is category-generic; per-SKU prep is data/config only.
+- **Intraday (§10.10):** demo daypart pressure curve plus a modelled sellout/lost-sales estimate
+  from observed last-sale time (returns nothing without a real timestamp).
+
+### Still synthetic or partial (honest gaps)
+- **Sales, traffic, events, economics, hours, usage/adherence** remain synthetic/demo until a
+  real café uses the app (§1.1) — they must stay labelled advisory.
+- **Weather outcome proxies** cover only forward real-forecast rows; historical demo weather stays
+  synthetic on purpose (its synthetic sales were generated from it).
+- **POS import** is CSV-only; no POS APIs. **Auth** is `streamlit-authenticator`, not managed.
+- The shared environment layer is **not fitted** in the demo (too few consenting accounts).
+
+### Candidate additions (not yet built)
+- Event-driven weather re-fetch when a materially newer forecast arrives before prep (§11).
+- Real event/holiday/tourism-season feeds with owner confirmation (§9, Phase 1F).
+- Tobit ↔ comparable-day A/B on Fadri held-out data to clear the §6.4 ship-gate.
+- Survival/Kaplan-Meier upper-tail cross-check for the censoring model (§12 step 3).
+- POS API import and timestamp coverage to unlock production intraday claims (Phase 2/3).
+- Backups, monitoring, and access audit before any real-data pilot; managed auth before
+  multi-tenant selling (§10.9). A single-tenant auth exception must follow the P0 policy below.
+- SKU-level UI and per-SKU synthetic data (engine already supports the grain).
+
+### Next sellability gates (priority order)
+
+The next release should deepen evidence and operating safety before adding product breadth. These
+are exit gates, not a feature wish list.
+
+#### P0 - Safe real-data pilot
+1. **Recoverability:** automated database backups, a documented retention policy, and a restore
+   drill into an isolated database. Done when a timed restore succeeds and row counts plus a
+   recommendation replay match the source snapshot.
+2. **Operational monitoring:** alert on failed scheduled refreshes, stale weather, migration
+   failure, database connection exhaustion, and recommendation-generation errors. Every alert
+   needs an owner, severity, runbook, and last-success timestamp.
+3. **Access lifecycle:** managed authentication, password reset, user disable/removal, secret
+   rotation, and an access audit. A tightly controlled single-tenant pilot may use the existing
+   login only with a written exception and expiry date; multi-tenant selling may not.
+4. **Real-vs-demo isolation:** provisioning must explicitly mark a tenant as demo or real. Demo
+   refresh, synthetic truth, and synthetic context rows must be impossible to enable for a real
+   tenant by accident.
+
+#### P0 - Fast, observable daily workflow
+1. Instrument server-side duration and outcome for login/bootstrap, Today payload, closeout save,
+   and recommendation generation without logging customer values or credentials.
+2. Warm p95 targets on the hosted pilot environment: Today ready in <3 seconds; closeout save plus
+   tomorrow's recommendation in <5 seconds; cached view changes in <1 second.
+3. Track error rate, cache hit rate, database pool wait, payload row counts, and scheduled-refresh
+   age. Performance claims require at least seven days of hosted measurements, not a local run.
+4. Run the one-handed mobile workflow on a real phone: recommendation readable in <15 seconds,
+   closeout median <30 seconds, no horizontal overflow at 360 px width.
+
+#### P0 - Real-data model and value proof
+1. Run a prospective shadow window on real café data. Freeze each recommendation before the
+   outcome, preserve its snapshot, and exclude corrected/imputed rows according to the written
+   protocol.
+2. Compare Tobit, comparable-day, last-week, and trailing-four-week methods by category on the
+   same held-out dates. No method becomes live until the §6.4 gates clear.
+3. Report baseline/live results together: observed waste proxy, sellout frequency, expected
+   mis-prep cost with uncertainty, completion, adherence, and overrides. Never select only the
+   favorable metric.
+4. Add a commercial continuation gate: after the pilot, record whether the owner would keep using
+   the product at a stated price or paid service level. Product usefulness without willingness to
+   pay is learning, not sellability.
+
+#### P1 - Repeatable onboarding and broader utility
+1. Add an operator-safe location setup for timezone, coordinates, hours, categories/SKUs, and
+   owner-confirmed economics; validate the complete setup before recommendations can be live.
+2. Save reusable POS mappings, support idempotent re-import, and expose import freshness and
+   reconciliation. Add direct POS APIs only after two real exports prove the canonical contract.
+3. Move the closeout UI from hard-coded sweet/savory fields to configured categories or SKUs.
+4. Add confirmed holiday/event feeds and event-driven weather refresh only when source coverage,
+   provenance, and failure behavior are measurable.
+
+#### Explicitly deferred
+- Staffing, ingredients, inventory ordering, and cross-location benchmarking remain out until one
+  real café clears both the model gate and the paid-continuation gate.
