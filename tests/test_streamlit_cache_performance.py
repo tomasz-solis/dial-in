@@ -43,6 +43,10 @@ def test_performance_payload_is_bounded_and_reuses_matched_rows() -> None:
     assert "PERFORMANCE_HISTORY_DAYS" in source
     assert "r.date >= %s" in source
     assert "_scorecard_from_rows(outcomes)" in source
+    assert "r.probe_active" in source
+    assert "r.probe_extra_units" in source
+    assert "pilot_windows" in source
+    assert "pilot_profile" in source
     assert "SELECT *" not in source
     assert "LIMIT %s" in source
 

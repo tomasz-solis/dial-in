@@ -18,6 +18,7 @@ from psycopg.rows import dict_row
 from dialin import repository
 from dialin.db import fetch_all, fetch_one
 from dialin.demo_truth import load_truth_demand as _load_truth_demand
+from dialin.weather import forecast_from_row
 
 _CONNECTION_POOL_CLASS: Any
 try:
@@ -65,6 +66,8 @@ class SetupPayload(TypedDict):
     events: list[dict[str, Any]]
     economics: list[dict[str, Any]]
     recent_imports: list[dict[str, Any]]
+    pilot_windows: list[dict[str, Any]]
+    pilot_profile: dict[str, Any] | None
 
 
 class PerformancePayload(TypedDict):
@@ -76,6 +79,8 @@ class PerformancePayload(TypedDict):
     economics: list[dict[str, Any]]
     recent_imports: list[dict[str, Any]]
     corrections: list[dict[str, Any]]
+    pilot_windows: list[dict[str, Any]]
+    pilot_profile: dict[str, Any] | None
 
 
 @st.cache_resource(show_spinner=False)
@@ -243,7 +248,7 @@ def fetch_today_payload(
             """
             SELECT category, recommended_prep, demand_p50, demand_p_lower,
                    demand_p_upper, service_quantile, confidence, risk_flag,
-                   top_drivers, generated_at
+                   top_drivers, probe_active, probe_extra_units, generated_at
             FROM recommendations
             WHERE account_id = %s
               AND location_id = %s
@@ -256,7 +261,8 @@ def fetch_today_payload(
         weather = fetch_one(
             conn,
             """
-            SELECT date, temp_forecast, rain_forecast, condition, forecast_made_at
+            SELECT date, temp_forecast, rain_forecast, condition,
+                   forecast_source, forecast_made_at
             FROM weather
             WHERE account_id = %s AND location_id = %s AND date = %s
             """,
@@ -280,7 +286,10 @@ def fetch_today_payload(
     )
     return {
         "recommendations": recommendations,
-        "context": {"weather": weather, "events": events},
+        "context": {
+            "weather": forecast_from_row(weather, target_date).as_engine_inputs(),
+            "events": events,
+        },
         "flow": flow,
     }
 
@@ -419,6 +428,25 @@ def fetch_setup_payload(
             """,
             (account_id, location_id, 10),
         )
+        pilot_windows = fetch_all(
+            conn,
+            """
+            SELECT pilot_window_id, phase, start_date, end_date, note
+            FROM pilot_windows
+            WHERE account_id = %s AND location_id = %s
+            ORDER BY start_date DESC, phase
+            """,
+            (account_id, location_id),
+        )
+        pilot_profile = fetch_one(
+            conn,
+            """
+            SELECT responses, values_source, updated_at
+            FROM pilot_profile
+            WHERE account_id = %s AND location_id = %s
+            """,
+            (account_id, location_id),
+        )
 
     open_days = [] if location is None else list(location.get("open_days") or [])
     hours = _location_hours_plan(active_hours, target_date, open_days)
@@ -427,6 +455,8 @@ def fetch_setup_payload(
         "events": events,
         "economics": economics,
         "recent_imports": recent_imports,
+        "pilot_windows": pilot_windows,
+        "pilot_profile": pilot_profile,
     }
 
 
@@ -571,6 +601,8 @@ def fetch_performance_payload(
                 r.demand_p_upper,
                 r.service_quantile,
                 r.confidence,
+                r.probe_active,
+                r.probe_extra_units,
                 r.prepared AS recommendation_prepared,
                 r.adhered,
                 r.override_delta,
@@ -656,6 +688,25 @@ def fetch_performance_payload(
             """,
             (account_id, location_id, 25),
         )
+        pilot_windows = fetch_all(
+            conn,
+            """
+            SELECT pilot_window_id, phase, start_date, end_date, note
+            FROM pilot_windows
+            WHERE account_id = %s AND location_id = %s
+            ORDER BY start_date DESC, phase
+            """,
+            (account_id, location_id),
+        )
+        pilot_profile = fetch_one(
+            conn,
+            """
+            SELECT responses, values_source, updated_at
+            FROM pilot_profile
+            WHERE account_id = %s AND location_id = %s
+            """,
+            (account_id, location_id),
+        )
 
     frames = {
         "daily_metrics": _frame(daily_rows, ("date", "is_open", "drinks_sold", "input_source")),
@@ -671,6 +722,8 @@ def fetch_performance_payload(
         "economics": economics,
         "recent_imports": recent_imports,
         "corrections": corrections,
+        "pilot_windows": pilot_windows,
+        "pilot_profile": pilot_profile,
     }
     _log_payload_timing(
         "performance",

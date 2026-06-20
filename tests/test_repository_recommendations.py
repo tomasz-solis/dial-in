@@ -127,6 +127,7 @@ def test_recommendation_build_payload_uses_bounded_windows(monkeypatch: Any) -> 
     assert fetch_all_calls[2][1] == ("acct", "loc", date(2026, 6, 1))
     assert fetch_all_calls[3][1] == ("acct", "loc", date(2026, 6, 1))
     assert fetch_all_calls[4][1] == ("acct", "loc", date(2026, 6, 1), date(2026, 6, 1))
+    assert "decensor_probe_opt_in" in fetch_all_calls[4][0]
 
 
 class _FakeConnection:
@@ -164,6 +165,8 @@ def _recommendation_result() -> RecommendationResult:
         confidence="Medium",
         risk_flag="normal",
         top_drivers=[],
+        probe_active=False,
+        probe_extra_units=0,
         model_version="v1_rules_newsvendor",
         input_snapshot_id=stable_hash(input_snapshot),
         config_snapshot_id=stable_hash(config_snapshot),

@@ -150,6 +150,8 @@ def fetch_recommendation_outcomes(
                 r.service_quantile,
                 r.confidence,
                 r.adhered,
+                r.probe_active,
+                r.probe_extra_units,
                 c.sold,
                 c.prepared AS actual_prepared,
                 c.sold_out

@@ -5,11 +5,23 @@ on:
     - cron: "15 5 * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-demo-data
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
+      # Low-privilege app role. MIGRATION_DATABASE_URL is optional and only used to
+      # discover accounts beyond the demo set (a cross-tenant read); leave it unset
+      # for the demo.
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
       APP_DATABASE_ROLE: dialin_app
     steps:
       - uses: actions/checkout@v4
@@ -17,5 +29,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Refresh synthetic demo data
-        run: uv run python scripts/refresh_demo_data.py
+      - name: Scheduled refresh (real weather + demo data)
+        # Fetches real weather first, then refreshes demo data so recommendations
+        # use the real forecast. Weather-API failures are handled per-account inside
+        # the script and never abort the demo refresh.
+        run: uv run python scripts/scheduled_refresh.py

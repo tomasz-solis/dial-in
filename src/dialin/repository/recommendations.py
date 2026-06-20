@@ -11,6 +11,7 @@ import pandas as pd
 
 from dialin.db import account_connection, fetch_all, fetch_one
 from dialin.engine import RecommendationResult, build_recommendations, result_to_record
+from dialin.weather import forecast_from_row
 
 logger = logging.getLogger(__name__)
 RECOMMENDATION_HISTORY_DAYS = 365
@@ -102,7 +103,8 @@ def fetch_recommendation_context(
         weather = fetch_one(
             conn,
             """
-            SELECT date, temp_forecast, rain_forecast, condition, forecast_made_at
+            SELECT date, temp_forecast, rain_forecast, condition,
+                   forecast_source, forecast_made_at
             FROM weather
             WHERE account_id = %s AND location_id = %s AND date = %s
             """,
@@ -118,7 +120,8 @@ def fetch_recommendation_context(
             """,
             (account_id, location_id, target_date),
         )
-    return {"weather": weather, "events": events}
+    forecast = forecast_from_row(weather, target_date).as_engine_inputs()
+    return {"weather": forecast, "events": events}
 
 
 def persist_recommendations(database_url: str, results: list[RecommendationResult]) -> None:
@@ -179,6 +182,8 @@ def insert_recommendation_set(
                     confidence,
                     risk_flag,
                     top_drivers,
+                    probe_active,
+                    probe_extra_units,
                     model_version,
                     input_snapshot_id,
                     config_snapshot_id,
@@ -200,6 +205,8 @@ def insert_recommendation_set(
                     %(confidence)s,
                     %(risk_flag)s,
                     %(top_drivers)s::jsonb,
+                    %(probe_active)s,
+                    %(probe_extra_units)s,
                     %(model_version)s,
                     %(input_snapshot_id)s,
                     %(config_snapshot_id)s,
@@ -291,7 +298,7 @@ def fetch_recommendation_build_payload(
                 conn,
                 """
                 SELECT date, temp_forecast, temp_actual, rain_forecast, rain_actual,
-                       wind, condition, forecast_made_at, actual_observed_at
+                       wind, condition, forecast_source, forecast_made_at, actual_observed_at
                 FROM weather
                 WHERE account_id = %s
                   AND location_id = %s
@@ -315,16 +322,20 @@ def fetch_recommendation_build_payload(
             "category_economics": fetch_all(
                 conn,
                 """
-                SELECT account_id, location_id, category, retail_price, unit_cogs,
-                       salvage_share_default, attached_drink_margin,
-                       attach_and_balk_rate, service_quantile, effective_from,
-                       effective_to, values_source
-                FROM category_economics
-                WHERE account_id = %s
-                  AND location_id = %s
-                  AND effective_from <= %s
-                  AND (effective_to IS NULL OR effective_to > %s)
-                ORDER BY category, effective_from
+                SELECT economics.account_id, economics.location_id, economics.category,
+                       economics.retail_price, economics.unit_cogs,
+                       economics.salvage_share_default, economics.attached_drink_margin,
+                       economics.attach_and_balk_rate, economics.service_quantile,
+                       economics.effective_from, economics.effective_to,
+                       economics.values_source, account.decensor_probe_opt_in
+                FROM category_economics AS economics
+                JOIN accounts AS account
+                  ON account.account_id = economics.account_id
+                WHERE economics.account_id = %s
+                  AND economics.location_id = %s
+                  AND economics.effective_from <= %s
+                  AND (economics.effective_to IS NULL OR economics.effective_to > %s)
+                ORDER BY economics.category, economics.effective_from
                 """,
                 (account_id, location_id, target_date, target_date),
             ),
@@ -342,6 +353,10 @@ def generate_and_store_recommendations(
 
     start = perf_counter()
     frames = fetch_recommendation_build_payload(database_url, account_id, location_id, target_date)
+    economics = frames["category_economics"]
+    probe_opt_in = (
+        bool(economics.iloc[0].get("decensor_probe_opt_in")) if not economics.empty else False
+    )
     fetch_elapsed = perf_counter() - start
     results = build_recommendations(
         account_id=account_id,
@@ -351,7 +366,8 @@ def generate_and_store_recommendations(
         category_metrics=frames["daily_category_metrics"],
         weather=frames["weather"],
         events=frames["events"],
-        economics=frames["category_economics"],
+        economics=economics,
+        probe_opt_in=probe_opt_in,
     )
     build_elapsed = perf_counter() - start - fetch_elapsed
     persist_recommendations(database_url, results)

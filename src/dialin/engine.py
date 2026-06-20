@@ -8,9 +8,17 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
+
+from dialin.censoring import (
+    CENSORING_METHOD_COMPARABLE,
+    CENSORING_METHOD_TOBIT,
+    tobit_decensored_demand,
+)
+from dialin.shared_environment import EnvironmentLayer
+from dialin.weather import FrameWeatherProvider
 
 MODEL_VERSION = "v1-demo-rules"
 
@@ -48,6 +56,23 @@ DISPERSION_CEILING = 80.0
 UPPER_TAIL_CENSOR_WIDENING = 0.3
 MAX_UPPER_QUANTILE = 0.97
 
+# De-censoring probe (PRD section 12 "de-censor by design"; assumption 12). A
+# category that chronically sells out never reveals its true ceiling: every busy
+# day is censored, so the upper quantile is extrapolated forever and the model
+# only ever re-fits yesterday's under-prep. The principled fix is to deliberately
+# prep ABOVE recent sellout levels on a small, controlled share of LOW-RISK days
+# to *observe* where demand actually tops out -- active experimentation with
+# bounded, disclosed extra waste. It is opt-in per account (never silent), only
+# fires on chronically-censored categories, skips days that already look elevated
+# (a known event or warm forecast, where the extra units may genuinely be needed),
+# and caps the added units so the extra waste stays small and explainable.
+PROBE_SERVICE_QUANTILE = 0.92  # aim above the owner's q*, toward the unseen ceiling
+PROBE_MAX_EXTRA_UNITS = 6  # hard cap on added units -> bounded extra waste
+PROBE_FREQUENCY = 4  # probe roughly 1 in N eligible days (deterministic)
+PROBE_CENSOR_RATE_FLOOR = 0.38  # only chronically sold-out categories qualify
+PROBE_ELEVATED_WEATHER_MULTIPLIER = 1.03  # treat a warmer forecast as a high day
+PROBE_RISK_FLAG = "Testing a higher number today"
+
 
 @dataclass(frozen=True)
 class RecommendationResult:
@@ -65,6 +90,8 @@ class RecommendationResult:
     confidence: str
     risk_flag: str
     top_drivers: list[dict[str, float | str]]
+    probe_active: bool
+    probe_extra_units: int
     model_version: str
     input_snapshot_id: str
     config_snapshot_id: str
@@ -92,8 +119,18 @@ def build_recommendations(
     weather: pd.DataFrame,
     events: pd.DataFrame,
     economics: pd.DataFrame,
+    probe_opt_in: bool = False,
+    censoring_method: str = CENSORING_METHOD_COMPARABLE,
+    environment_layer: EnvironmentLayer | None = None,
 ) -> list[RecommendationResult]:
-    """Build category recommendations from account-scoped observed history."""
+    """Build category recommendations from account-scoped observed history.
+
+    ``censoring_method`` selects how sold-out days are de-censored: the demo
+    ``comparable_day`` method (default) or the real-data ``tobit`` model
+    (PRD section 12). ``environment_layer`` optionally replaces the fixed demo
+    weather rules with the pooled shared elasticities (PRD sections 10.8, 11.1).
+    Both choices are recorded in each config snapshot.
+    """
 
     open_history = _open_history_before(daily_metrics, target_date)
     target_weather = _target_weather(weather, target_date)
@@ -103,7 +140,7 @@ def build_recommendations(
         else events
     )
     traffic_mean, traffic_drivers = _forecast_traffic(
-        open_history, target_date, target_weather, target_events
+        open_history, target_date, target_weather, target_events, environment_layer
     )
     results: list[RecommendationResult] = []
 
@@ -116,7 +153,10 @@ def build_recommendations(
         if category_history.empty:
             continue
         economics_row = _economics_for_category(economics, category, target_date)
-        corrected = decensored_demand_series(category_history, open_history)
+        if censoring_method == CENSORING_METHOD_TOBIT:
+            corrected = tobit_decensored_demand(category_history, open_history)
+        else:
+            corrected = decensored_demand_series(category_history, open_history)
         attach_rate = _trailing_attach_rate(corrected, open_history, target_date)
         demand_mean = max(traffic_mean * attach_rate, 0.5)
         dispersion = estimate_dispersion(
@@ -144,6 +184,21 @@ def build_recommendations(
             risk_flag = TAIL_FALLBACK_RISK_FLAG
         else:
             risk_flag = _risk_flag(recommended_prep, demand_p_upper, censor_rate)
+        probe_active, probe_extra_units = _probe_decision(
+            probe_opt_in=probe_opt_in,
+            account_id=account_id,
+            location_id=location_id,
+            category=str(category),
+            target_date=target_date,
+            censor_rate=censor_rate,
+            traffic_drivers=traffic_drivers,
+            demand_mean=demand_mean,
+            dispersion=dispersion,
+            recommended_prep=recommended_prep,
+        )
+        if probe_active:
+            recommended_prep += probe_extra_units
+            risk_flag = PROBE_RISK_FLAG
         drivers = _top_drivers(traffic_drivers, category, attach_rate, censor_rate)
         input_snapshot = _input_snapshot(
             target_date=target_date,
@@ -160,8 +215,10 @@ def build_recommendations(
             tail_fallback_recent=tail_fallback_recent,
             lower_q=lower_q,
             upper_q=upper_q,
+            probe_active=probe_active,
+            probe_extra_units=probe_extra_units,
         )
-        config_snapshot = _config_snapshot(economics_row)
+        config_snapshot = _config_snapshot(economics_row, censoring_method, environment_layer)
         input_snapshot_id = stable_hash(input_snapshot)
         config_snapshot_id = stable_hash(config_snapshot)
         results.append(
@@ -178,6 +235,8 @@ def build_recommendations(
                 confidence=confidence,
                 risk_flag=risk_flag,
                 top_drivers=drivers,
+                probe_active=probe_active,
+                probe_extra_units=probe_extra_units,
                 model_version=MODEL_VERSION,
                 input_snapshot_id=input_snapshot_id,
                 config_snapshot_id=config_snapshot_id,
@@ -217,6 +276,56 @@ def decensored_demand_series(
             merged.loc[index, "tail_fallback"] = True
         merged.loc[index, "estimated_demand"] = max(float(row["prepared"]), estimate)
     return merged
+
+
+def _probe_decision(
+    *,
+    probe_opt_in: bool,
+    account_id: str,
+    location_id: str,
+    category: str,
+    target_date: date,
+    censor_rate: float,
+    traffic_drivers: dict[str, float],
+    demand_mean: float,
+    dispersion: float,
+    recommended_prep: int,
+) -> tuple[bool, int]:
+    """Decide whether to run a bounded de-censoring probe and by how many units.
+
+    Gates (all required): the account opted in, the category is chronically
+    sold out, the day is not already elevated by a known event or warm forecast,
+    and the day is one of the deterministically selected ~1-in-N probe days. The
+    extra prep is capped so the added waste is bounded (PRD section 12).
+    """
+
+    if not probe_opt_in or censor_rate <= PROBE_CENSOR_RATE_FLOOR:
+        return False, 0
+    event_multiplier = float(traffic_drivers.get("event", 1.0))
+    weather_multiplier = float(traffic_drivers.get("weather", 1.0))
+    if event_multiplier > 1.0 or weather_multiplier > PROBE_ELEVATED_WEATHER_MULTIPLIER:
+        return False, 0
+    if not _probe_selected(account_id, location_id, category, target_date):
+        return False, 0
+    probe_prep = negative_binomial_quantile(demand_mean, dispersion, PROBE_SERVICE_QUANTILE)
+    extra = min(probe_prep, recommended_prep + PROBE_MAX_EXTRA_UNITS) - recommended_prep
+    if extra <= 0:
+        return False, 0
+    return True, int(extra)
+
+
+def _probe_selected(account_id: str, location_id: str, category: str, target_date: date) -> bool:
+    """Deterministically pick ~1-in-N eligible days so replay stays reproducible."""
+
+    selector = stable_hash(
+        {
+            "account_id": account_id,
+            "location_id": location_id,
+            "category": category,
+            "target_date": target_date.isoformat(),
+        }
+    )
+    return int(selector, 16) % PROBE_FREQUENCY == 0
 
 
 def estimate_dispersion(values: list[float], fallback_mean: float) -> float:
@@ -293,6 +402,8 @@ def _input_snapshot(
     tail_fallback_recent: bool,
     lower_q: float,
     upper_q: float,
+    probe_active: bool,
+    probe_extra_units: int,
 ) -> dict[str, Any]:
     """Return the replayable observed inputs used for one recommendation."""
 
@@ -315,14 +426,21 @@ def _input_snapshot(
         "censor_rate": round(censor_rate, 4),
         "tail_fallback_recent": tail_fallback_recent,
         "range_quantiles": {"lower": lower_q, "upper": upper_q},
+        "probe": {"active": probe_active, "extra_units": probe_extra_units},
     }
 
 
-def _config_snapshot(economics_row: pd.Series[Any]) -> dict[str, Any]:
+def _config_snapshot(
+    economics_row: pd.Series[Any],
+    censoring_method: str,
+    environment_layer: EnvironmentLayer | None,
+) -> dict[str, Any]:
     """Return the model constants and economics used for one recommendation."""
 
     return {
         "model_version": MODEL_VERSION,
+        "censoring_method": censoring_method,
+        "environment_layer": environment_layer.as_parameters() if environment_layer else None,
         "economics": _json_ready(economics_row.to_dict()),
         "constants": {
             "fallback_demand_uplift": FALLBACK_DEMAND_UPLIFT,
@@ -333,6 +451,10 @@ def _config_snapshot(economics_row: pd.Series[Any]) -> dict[str, Any]:
             "dispersion_ceiling": DISPERSION_CEILING,
             "upper_tail_censor_widening": UPPER_TAIL_CENSOR_WIDENING,
             "max_upper_quantile": MAX_UPPER_QUANTILE,
+            "probe_service_quantile": PROBE_SERVICE_QUANTILE,
+            "probe_max_extra_units": PROBE_MAX_EXTRA_UNITS,
+            "probe_frequency": PROBE_FREQUENCY,
+            "probe_censor_rate_floor": PROBE_CENSOR_RATE_FLOOR,
         },
     }
 
@@ -370,20 +492,14 @@ def _observed_category_history(
 
 
 def _target_weather(weather: pd.DataFrame, target_date: date) -> dict[str, Any]:
-    """Return target-date weather or a seasonal-normal fallback."""
+    """Return the resolved target-date forecast (with freshness) or seasonal normal.
 
-    if not weather.empty:
-        frame = weather.copy()
-        frame["date"] = pd.to_datetime(frame["date"]).dt.date
-        rows = frame[frame["date"] == target_date]
-        if not rows.empty:
-            return cast(dict[str, Any], rows.iloc[0].to_dict())
-    return {
-        "temp_forecast": 18.0,
-        "rain_forecast": 0.0,
-        "condition": "seasonal normal",
-        "missing": True,
-    }
+    Delegates to the weather seam so a missing *or stale* forecast lowers
+    confidence instead of being trusted silently (PRD sections 1.1, 11.4).
+    """
+
+    forecast = FrameWeatherProvider(weather).forecast_for(target_date)
+    return forecast.as_engine_inputs()
 
 
 def _forecast_traffic(
@@ -391,6 +507,7 @@ def _forecast_traffic(
     target_date: date,
     target_weather: dict[str, Any],
     target_events: pd.DataFrame,
+    environment_layer: EnvironmentLayer | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Forecast drinks traffic from trailing same-weekday history and external lifts."""
 
@@ -404,9 +521,13 @@ def _forecast_traffic(
         base = float(base_rows["drinks_sold"].mean())
     temp = float(target_weather.get("temp_forecast", 18.0))
     rain = float(target_weather.get("rain_forecast", 0.0))
-    weather_multiplier = max(
-        0.78, 1 + min(max((temp - 18) * 0.007, -0.06), 0.08) - min(rain * 0.015, 0.16)
-    )
+    if environment_layer is not None:
+        # Real-data path: pooled cross-café elasticities replace the demo rule.
+        weather_multiplier = environment_layer.weather_multiplier(temp, rain)
+    else:
+        weather_multiplier = max(
+            0.78, 1 + min(max((temp - 18) * 0.007, -0.06), 0.08) - min(rain * 0.015, 0.16)
+        )
     if target_events.empty:
         event_multiplier = 1.0
     else:
@@ -472,7 +593,12 @@ def _tail_fallback_recent(corrected: pd.DataFrame, target_date: date) -> bool:
 def _confidence(history_depth: int, censor_rate: float, target_weather: dict[str, Any]) -> str:
     """Convert data depth and input quality into an owner-facing confidence label."""
 
-    if target_weather.get("missing") or history_depth < 40 or censor_rate > 0.38:
+    if (
+        target_weather.get("missing")
+        or target_weather.get("stale")
+        or history_depth < 40
+        or censor_rate > 0.38
+    ):
         return "Low"
     if history_depth < 90 or censor_rate > 0.25:
         return "Medium"

@@ -119,6 +119,15 @@ def _operator_action(rows: list[dict[str, Any]]) -> tuple[str, str]:
 def _watch_item(rows: list[dict[str, Any]], context: dict[str, Any]) -> tuple[str, str]:
     """Return the most important thing for the operator to watch today."""
 
+    probe_rows = [row for row in rows if bool(row.get("probe_active"))]
+    if probe_rows:
+        row = probe_rows[0]
+        extra = int(row.get("probe_extra_units", 0))
+        return (
+            "Learning your ceiling",
+            f"{str(row['category']).title()} prep is +{extra} on purpose — "
+            "note if it still sells out.",
+        )
     risk_rows = [
         row
         for row in rows
@@ -224,6 +233,11 @@ def _render_why_details(rows: list[dict[str, Any]]) -> None:
             f"{format_percent(float(row['service_quantile']))} service level "
             f"· {row['confidence']} confidence"
         )
+        if bool(row.get("probe_active")):
+            st.caption(
+                f"Prepping +{int(row.get('probe_extra_units', 0))} above the usual number "
+                "today to learn your real ceiling (bounded extra, recorded for review)."
+            )
         st.markdown(
             f'<div class="di-chip-row">{_driver_chips(row.get("top_drivers", []))}</div>',
             unsafe_allow_html=True,
@@ -289,7 +303,7 @@ def _risk_summary(rows: list[dict[str, Any]]) -> str:
 def _weather_summary(weather: dict[str, Any] | None) -> str:
     """Return a short weather label for the recommendation context."""
 
-    if not weather:
+    if not weather or weather.get("missing"):
         return "Seasonal normal"
     condition = str(weather.get("condition", "unknown")).title()
     temp = float(weather.get("temp_forecast", 0.0))
@@ -297,12 +311,24 @@ def _weather_summary(weather: dict[str, Any] | None) -> str:
 
 
 def _weather_detail(weather: dict[str, Any] | None) -> str:
-    """Return compact weather detail text for context cards."""
+    """Return compact weather detail text, calling out missing/stale forecasts."""
 
-    if not weather:
-        return "No forecast row; lower confidence."
+    if not weather or weather.get("missing"):
+        return "No forecast row; seasonal normal lowers confidence."
     rain = float(weather.get("rain_forecast", 0.0))
-    return f"Rain {rain:.1f} mm · made {format_timestamp(weather.get('forecast_made_at'))}"
+    if weather.get("stale"):
+        age = weather.get("forecast_age_hours")
+        age_text = f"{float(age):.0f}h old" if age is not None else "old"
+        return f"Rain {rain:.1f} mm · forecast {age_text} (stale) lowers confidence"
+    source = {
+        "open_meteo": "Open-Meteo",
+        "synthetic_demo": "synthetic demo",
+        "legacy": "stored",
+    }.get(str(weather.get("source")), "stored")
+    return (
+        f"Rain {rain:.1f} mm · {source} forecast made "
+        f"{format_timestamp(weather.get('forecast_made_at'))}"
+    )
 
 
 def _event_summary(events: Any) -> str:

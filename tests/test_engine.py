@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pandas as pd
 import pytest
 
 from dialin.engine import (
     FALLBACK_DEMAND_UPLIFT,
+    PROBE_MAX_EXTRA_UNITS,
+    PROBE_RISK_FLAG,
     TAIL_FALLBACK_RISK_FLAG,
     _observed_category_history,
     _open_history_before,
+    _probe_decision,
     build_recommendations,
     decensored_demand_series,
     negative_binomial_quantile,
@@ -22,6 +26,66 @@ from dialin.engine import (
     stable_hash,
 )
 from dialin.generator import generate_synthetic_dataset
+
+
+def _chronic_sellout_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return a long, mostly sold-out single-category history for probe tests."""
+
+    dates = pd.date_range("2026-01-01", periods=140, freq="D").date
+    daily = pd.DataFrame(
+        {
+            "date": dates,
+            "is_open": [True] * 140,
+            "drinks_sold": [120] * 140,
+            "input_source": ["confirmed"] * 140,
+        }
+    )
+    # Sold out on ~80% of days: a chronically censored category (censor_rate > 0.38).
+    sold_out = [(index % 5) != 0 for index in range(140)]
+    category = pd.DataFrame(
+        {
+            "date": dates,
+            "category": ["sweet"] * 140,
+            "sold": [40 if out else 30 for out in sold_out],
+            "prepared": [40 if out else 36 for out in sold_out],
+            "sold_out": sold_out,
+            "input_source": ["confirmed"] * 140,
+        }
+    )
+    economics = pd.DataFrame(
+        {
+            "category": ["sweet"],
+            "service_quantile": [0.78],
+            "values_source": ["owner_confirmed"],
+            "effective_from": [date(2025, 1, 1)],
+            "effective_to": [None],
+        }
+    )
+    return daily, category, economics
+
+
+def _first_probe_result(probe_opt_in: bool) -> tuple[date, list[Any]]:
+    """Build recommendations across candidate dates and return the first probe day."""
+
+    daily, category, economics = _chronic_sellout_inputs()
+    last_result: list[Any] = []
+    for offset in range(40):
+        target_date = date(2026, 5, 21) + timedelta(days=offset)
+        results = build_recommendations(
+            account_id="acct_probe",
+            location_id="loc_probe",
+            target_date=target_date,
+            daily_metrics=daily,
+            category_metrics=category,
+            weather=pd.DataFrame(),
+            events=pd.DataFrame(),
+            economics=economics,
+            probe_opt_in=probe_opt_in,
+        )
+        last_result = results
+        if any(result.probe_active for result in results):
+            return target_date, results
+    return date(2026, 5, 21), last_result
 
 
 def test_service_quantile_and_distribution_are_monotonic() -> None:
@@ -261,3 +325,80 @@ def test_stable_hash_accepts_postgres_decimal_values() -> None:
     digest = stable_hash({"service_quantile": Decimal("0.7800"), "retail_price": Decimal("3.50")})
 
     assert len(digest) == 64
+
+
+def test_probe_is_off_by_default() -> None:
+    """A chronically sold-out category must not probe unless the account opted in."""
+
+    _, results = _first_probe_result(probe_opt_in=False)
+
+    assert results
+    assert not any(result.probe_active for result in results)
+    assert all(result.probe_extra_units == 0 for result in results)
+
+
+def test_probe_fires_on_chronic_low_risk_day_and_is_bounded() -> None:
+    """An opted-in chronic-sellout category should probe with bounded, disclosed extra."""
+
+    target_date, results = _first_probe_result(probe_opt_in=True)
+
+    probed = [result for result in results if result.probe_active]
+    assert probed, f"expected a probe by {target_date}"
+    result = probed[0]
+    assert 0 < result.probe_extra_units <= PROBE_MAX_EXTRA_UNITS
+    assert result.risk_flag == PROBE_RISK_FLAG
+    assert result.input_snapshot["probe"] == {
+        "active": True,
+        "extra_units": result.probe_extra_units,
+    }
+    # The probe lifts prep above the owner's q* quantity by exactly the recorded extra.
+    assert result.recommended_prep >= result.demand_p50
+
+
+def test_probe_skips_when_a_known_event_elevates_the_day() -> None:
+    """The probe must not add waste on days that already look high-demand."""
+
+    daily, category, economics = _chronic_sellout_inputs()
+    events = pd.DataFrame(
+        {
+            "date": [date(2026, 5, 23)],
+            "event_name": ["street market"],
+            "impact_score": [0.3],
+        }
+    )
+    active, extra = _probe_decision(
+        probe_opt_in=True,
+        account_id="acct_probe",
+        location_id="loc_probe",
+        category="sweet",
+        target_date=date(2026, 5, 23),
+        censor_rate=0.8,
+        traffic_drivers={"weekday": 1.0, "weather": 1.0, "event": 1.3},
+        demand_mean=45.0,
+        dispersion=20.0,
+        recommended_prep=44,
+    )
+
+    assert active is False
+    assert extra == 0
+    del daily, category, economics, events
+
+
+def test_probe_skips_low_censoring_categories() -> None:
+    """A category that rarely sells out has an observed tail and needs no probe."""
+
+    active, extra = _probe_decision(
+        probe_opt_in=True,
+        account_id="acct_probe",
+        location_id="loc_probe",
+        category="sweet",
+        target_date=date(2026, 5, 23),
+        censor_rate=0.1,
+        traffic_drivers={"weekday": 1.0, "weather": 1.0, "event": 1.0},
+        demand_mean=45.0,
+        dispersion=20.0,
+        recommended_prep=44,
+    )
+
+    assert active is False
+    assert extra == 0

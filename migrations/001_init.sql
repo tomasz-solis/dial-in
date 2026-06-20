@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS weather (
     rain_actual numeric(8, 2),
     wind numeric(6, 2) NOT NULL,
     condition text NOT NULL,
+    forecast_source text NOT NULL DEFAULT 'legacy',
     forecast_made_at timestamptz NOT NULL,
     actual_observed_at timestamptz,
     PRIMARY KEY (account_id, location_id, date),
@@ -121,7 +122,8 @@ CREATE TABLE IF NOT EXISTS weather (
         ON DELETE CASCADE,
     CHECK (rain_forecast >= 0),
     CHECK (rain_actual >= 0),
-    CHECK (wind >= 0)
+    CHECK (wind >= 0),
+    CHECK (forecast_source IN ('legacy', 'synthetic_demo', 'open_meteo'))
 );
 
 CREATE TABLE IF NOT EXISTS events (

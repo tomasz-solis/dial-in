@@ -29,6 +29,8 @@ class CafeConfig:
     timezone: str
     city: str
     country: str
+    latitude: float
+    longitude: float
     open_days: tuple[int, ...]
     base_drinks: float
     capacity_hint: int
@@ -60,6 +62,8 @@ def default_cafes() -> tuple[CafeConfig, CafeConfig]:
             timezone="Europe/Madrid",
             city="Cambrils, Tarragona",
             country="ES",
+            latitude=41.06670,
+            longitude=1.06000,
             open_days=(1, 2, 3, 4, 5, 6),
             base_drinks=142,
             capacity_hint=245,
@@ -77,6 +81,8 @@ def default_cafes() -> tuple[CafeConfig, CafeConfig]:
             timezone="Europe/Madrid",
             city="Valencia",
             country="ES",
+            latitude=39.46990,
+            longitude=-0.37630,
             open_days=(0, 1, 2, 3, 4, 5),
             base_drinks=126,
             capacity_hint=205,
@@ -119,6 +125,10 @@ def generate_synthetic_dataset(
                 "plan": "demo",
                 "contributes_to_shared_layer": True,
                 "cold_start_pool_opt_in": False,
+                # Fadri is the chronic-weekend-sellout profile, so it opts into the
+                # bounded de-censoring probe (PRD section 12); the dummy cafe stays
+                # off as the contrast profile.
+                "decensor_probe_opt_in": cafe.account_id == "acct_fadri",
                 "pos_backfill_months": months,
                 "created_at": _local_timestamp(dates[0], cafe.timezone, 8),
             }
@@ -131,6 +141,8 @@ def generate_synthetic_dataset(
                 "timezone": cafe.timezone,
                 "city": cafe.city,
                 "country": cafe.country,
+                "latitude": cafe.latitude,
+                "longitude": cafe.longitude,
                 "open_days": list(cafe.open_days),
                 "service_capacity_hint": cafe.capacity_hint,
                 "created_at": _local_timestamp(dates[0], cafe.timezone, 8),
@@ -401,6 +413,7 @@ def _weather_for_day(
         "rain_actual": round(float(rain_actual), 2),
         "wind": round(float(max(1.0, rng.normal(10, 4))), 2),
         "condition": condition,
+        "forecast_source": "synthetic_demo",
         "forecast_made_at": _local_timestamp(current_date - timedelta(days=1), cafe.timezone, 18),
         "actual_observed_at": _local_timestamp(current_date, cafe.timezone, 18),
     }

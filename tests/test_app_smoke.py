@@ -11,7 +11,7 @@ import pytest
 import streamlit as st
 
 import app
-from dialin import formatting
+from dialin import formatting, streamlit_cache
 from dialin import ui_components as ui
 from dialin import views as app_views
 from dialin.pos_import import DailySalesRollup, PosImportError, PosImportPreview
@@ -62,6 +62,13 @@ def test_demo_refresh_on_load_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("DIALIN_DEMO_REFRESH_ON_LOAD", "true")
 
     assert app._demo_refresh_on_load_enabled() is True
+
+
+def test_today_payload_carries_probe_disclosure_fields() -> None:
+    source = inspect.getsource(streamlit_cache.fetch_today_payload)
+
+    assert "probe_active" in source
+    assert "probe_extra_units" in source
 
 
 def test_plotly_charts_use_explicit_keys() -> None:
@@ -317,8 +324,28 @@ def test_intraday_sellout_rows_show_time_before_close() -> None:
             "prepared": 42,
             "last sale": "13:30",
             "before close": "150 min before close",
+            "est. lost (modelled)": "-",
         }
     ]
+
+
+def test_intraday_sellout_rows_show_modelled_lost_units() -> None:
+    """A modelled lost-sales estimate surfaces as a labelled column when present."""
+
+    rows = service._intraday_sellout_rows(
+        [
+            {
+                "category": "sweet",
+                "sold": 42,
+                "prepared": 42,
+                "time_last_sale": time(13, 30),
+                "modelled_lost_sales": {"lost_units": 11.0},
+            }
+        ],
+        time(16, 0),
+    )
+
+    assert rows[0]["est. lost (modelled)"] == "~11"
 
 
 def test_stockout_windows_use_known_last_sale_until_close() -> None:
@@ -406,6 +433,8 @@ def test_setup_readiness_score_names_next_action() -> None:
         "economics": [{"values_source": "default"}],
         "recent_imports": [],
         "events": [],
+        "pilot_windows": [],
+        "pilot_profile": None,
     }
 
     assert setup._setup_readiness_score(payload) == (
@@ -420,6 +449,8 @@ def test_setup_readiness_score_names_next_action() -> None:
         "economics": [{"values_source": "owner_confirmed"}],
         "recent_imports": [{"rows_imported": 100, "rows_rejected": 0}],
         "events": [],
+        "pilot_windows": [],
+        "pilot_profile": None,
     }
     assert setup._setup_readiness_score(ready_payload)[0] == 100
     assert setup._operating_mode(100) == "Daily guide"

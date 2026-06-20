@@ -33,6 +33,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "plan",
         "contributes_to_shared_layer",
         "cold_start_pool_opt_in",
+        "decensor_probe_opt_in",
         "pos_backfill_months",
         "created_at",
     ),
@@ -44,6 +45,8 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "timezone",
         "city",
         "country",
+        "latitude",
+        "longitude",
         "open_days",
         "service_capacity_hint",
         "created_at",
@@ -94,6 +97,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "rain_actual",
         "wind",
         "condition",
+        "forecast_source",
         "forecast_made_at",
         "actual_observed_at",
     ),
@@ -198,6 +202,8 @@ def read_observed_frames(observed_dir: Path) -> dict[str, pd.DataFrame]:
         ensure_no_truth_columns(frame, table_name)
         if table_name == "category_economics" and "values_source" not in frame.columns:
             frame["values_source"] = "default"
+        if table_name == "weather" and "forecast_source" not in frame.columns:
+            frame["forecast_source"] = "legacy"
         _check_columns(frame, table_name, TABLE_COLUMNS[table_name])
         frames[table_name] = frame
 
