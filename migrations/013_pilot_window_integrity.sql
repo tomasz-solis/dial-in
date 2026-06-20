@@ -10,9 +10,9 @@ WITH ranked AS (
         ) AS row_rank
     FROM pilot_windows
 )
-DELETE FROM pilot_windows AS window
+DELETE FROM pilot_windows AS pilot_window
 USING ranked
-WHERE window.pilot_window_id = ranked.pilot_window_id
+WHERE pilot_window.pilot_window_id = ranked.pilot_window_id
   AND ranked.row_rank > 1;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pilot_windows_unique_phase

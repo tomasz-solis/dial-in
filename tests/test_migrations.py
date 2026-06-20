@@ -117,6 +117,7 @@ def test_product_integrity_migrations_track_weather_source_and_unique_pilot_phas
     assert "ADD COLUMN IF NOT EXISTS forecast_source" in weather_sql
     assert "locations_latitude_check" in weather_sql
     assert "idx_pilot_windows_unique_phase" in pilot_sql
+    assert "DELETE FROM pilot_windows AS window" not in pilot_sql
 
 
 def test_stale_recommendation_constraint_migration_compares_catalog_name_arrays() -> None:
