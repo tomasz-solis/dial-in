@@ -119,6 +119,14 @@ def test_product_integrity_migrations_track_weather_source_and_unique_pilot_phas
     assert "idx_pilot_windows_unique_phase" in pilot_sql
 
 
+def test_stale_recommendation_constraint_migration_compares_catalog_name_arrays() -> None:
+    migration_sql = Path(
+        "migrations/010_drop_stale_recommendations_unique.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "::name[]" in migration_sql
+
+
 def test_ci_runs_quality_type_test_and_realism_gates() -> None:
     """The default CI workflow should gate the daily-product quality checks."""
 

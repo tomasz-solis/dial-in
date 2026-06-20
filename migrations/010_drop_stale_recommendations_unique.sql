@@ -22,7 +22,7 @@ BEGIN
           JOIN pg_attribute AS attribute
             ON attribute.attrelid = conrelid
            AND attribute.attnum = key.attnum
-      ) = ARRAY['account_id', 'location_id', 'date', 'category', 'model_version'];
+      ) = ARRAY['account_id', 'location_id', 'date', 'category', 'model_version']::name[];
     IF target_conname IS NOT NULL THEN
         EXECUTE format('ALTER TABLE recommendations DROP CONSTRAINT %I', target_conname);
     END IF;
