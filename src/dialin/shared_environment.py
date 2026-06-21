@@ -1,24 +1,18 @@
 """Pooled environment-response layer and cold-start prior (PRD sections 10.8, 13).
 
-The serving path is strictly per-tenant (RLS). The *training* path is where the
-PRD allows cross-account data — but only as **anonymised aggregates in, model
-parameters out**, never raw rows. Postgres already enforces this: the
+The serving path is strictly per-tenant (RLS). The training path is the one place
+the PRD allows cross-account data, and only as anonymised aggregates in, model
+parameters out — never raw rows. Postgres enforces this: the
 ``shared_layer_features`` view aggregates open days by city/country/date across
-accounts that opted in (``contributes_to_shared_layer``) and is readable by the
-platform-admin role only, never a tenant role.
+opted-in accounts (``contributes_to_shared_layer``) and is readable only by the
+platform-admin role.
 
-This module is the offline training job that consumes that view:
-
-* :func:`fit_environment_layer` estimates generic weather elasticities (the only
-  lasting network effect, PRD section 13) and emits an :class:`EnvironmentLayer`
-  of **parameters only**. It refuses sparse segments (PRD assumption 9 / section
-  10.8 "≥ N consenting accounts") so a near-unique café cannot leak through.
-* :func:`cold_start_prior` returns a wide, Low-confidence baseline level for a
-  brand-new café with no POS backfill, conditioned on country/footfall band and
-  gated on opt-in (PRD section 13 cold-start path).
-
-Nothing here returns another tenant's rows, counts, or name; a tenant benefits
-solely as weights in the shared layer.
+This module is the offline job that consumes that view. ``fit_environment_layer``
+estimates generic weather elasticities and emits an ``EnvironmentLayer`` of
+parameters only; it refuses segments that are too sparse (PRD assumption 9), so a
+near-unique café cannot be reverse-engineered. ``cold_start_prior`` returns a
+wide, Low-confidence baseline for a café with no history, gated on opt-in. Nothing
+here returns another tenant's rows, counts, or name.
 """
 
 from __future__ import annotations

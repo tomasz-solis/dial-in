@@ -1,10 +1,22 @@
 # Dial In
 
-Dial In is a synthetic Streamlit demo for the café fresh-prep workflow described in
-`docs/PRD.md` and `docs/2026-05-31-synthetic-data-and-demo-design.md`.
+Dial In is a fresh-prep decision product for cafés, with a synthetic Streamlit demo and a
+controlled real-data pilot path described in `docs/PRD.md` and
+`docs/2026-05-31-synthetic-data-and-demo-design.md`.
 
 The demo is intentionally honest: generated data can show the workflow, censoring story,
 newsvendor decision layer, and replay mechanics. It does not prove real-world ROI.
+
+## Product status
+
+Dial In is ready to sell as a tightly managed, advisory real-data pilot. It is not yet a
+self-serve production SaaS product. A paid pilot should use one real location, confirmed
+economics, frozen recommendations, clean daily closeouts, and the Performance page's owner
+summary plus advanced evidence. Synthetic results are demonstration evidence only.
+
+Before broader or multi-tenant sales, complete the operational gates in PRD section 23: a tested
+database restore, monitored refresh/migration/weather failures, managed user lifecycle, real-data
+held-out model proof, repeatable onboarding/POS reconciliation, and an explicit pay-again decision.
 
 ## Production to do: replace non-real forecast inputs
 
@@ -12,15 +24,13 @@ Before Dial In is used as a daily operating tool for a real cafe, every non-real
 can affect a recommendation must either be replaced with a real source or be shown in-app as
 demo/advisory only. Current synthetic or placeholder inputs include:
 
-- **Weather:** real forecasts are pulled from the Open-Meteo API (free, no API key) by
-  `OpenMeteoWeatherProvider` in `src/dialin/weather.py`. Run `scripts/fetch_weather.py` to upsert
-  the next few days' real forecasts (per location coordinates) into the `weather` table with
-  `forecast_made_at`; the app reads them through `FrameWeatherProvider`, so a live recommendation
-  for tomorrow runs on a real forecast. Forecast age, staleness, and the seasonal-normal fallback
-  lower confidence as before. Forecast provenance is stored explicitly, and replacing a synthetic
-  row clears its synthetic actual before the ERA5 reanalysis proxy is backfilled. The scheduled
-  refresh fetches weather before rebuilding recommendations. Historical demo weather stays
-  synthetic because the synthetic sales were generated from it.
+- **Weather:** done — this is the one input that is now externally sourced. `scripts/fetch_weather.py`
+  pulls the daily forecast from Open-Meteo (free, no API key) and an outcome proxy afterwards from the ERA5
+  archive, and writes both to the `weather` table tagged with their source. The app reads them back
+  the same way it always did, so tomorrow's recommendation runs on a real forecast; a stale or
+  missing forecast still falls back to seasonal-normal and lowers confidence. Only the *historical*
+  demo weather stays synthetic, because the synthetic sales were generated from it. ERA5 is
+  reanalysis, not a station reading, so it is labelled as an outcome proxy rather than measured truth.
 
   ```bash
   uv run python scripts/fetch_weather.py            # next 7 days, demo locations
@@ -121,8 +131,8 @@ The seeded demo accounts are:
 The synthetic data has a finite timeline, so it would otherwise look stale a few days
 after it is generated. The deployed app is kept current by the scheduled
 `.github/workflows/refresh-demo-data.yml` workflow, which daily runs
-`scripts/scheduled_refresh.py` (real Open-Meteo forecasts + ERA5 reanalysis proxies, followed by
-the demo refresh). Fetching weather first means the regenerated
+`scripts/scheduled_refresh.py` (real Open-Meteo forecasts and ERA5 outcome proxies first, then the demo
+refresh). Fetching weather first means the regenerated
 recommendations use the real forecast; the weather step is non-fatal so an API hiccup
 falls back to seasonal-normal rather than stalling the refresh. Add a GitHub Actions
 repository secret named `DATABASE_URL` that uses the low-privilege `dialin_app` role.
@@ -178,39 +188,3 @@ default so the suite stays offline-deterministic:
 ```bash
 DIALIN_WEATHER_LIVE_TEST=1 uv run pytest tests/test_weather_openmeteo.py
 ```
-
-## Implementation status & what's next
-
-`docs/PRD.md` §23 carries the authoritative status. In short: the decision engine, RLS (tested
-in CI), real Open-Meteo weather, the real-data Tobit censoring path, honest measurement and
-model gates, attribution and pilot reporting, the pooled environment-layer estimator, SKU
-readiness, and a modelled intraday sellout estimate are all built. Still synthetic/advisory:
-sales, traffic, events, economics, hours, and usage/adherence (until a real café uses the app).
-Candidate next steps: real event/holiday feeds, POS API import, backups and monitoring before a
-real-data pilot, managed auth before multi-tenant selling, an event-driven weather re-fetch, and a
-Tobit-vs-baseline A/B on real held-out data.
-
-## Before selling beyond a controlled paid pilot
-
-The codebase is ready to support an honest, concierge-run pilot; it is not yet a self-serve
-production SaaS. The next work is ordered by risk, not novelty. `docs/PRD.md` §23 contains the
-full acceptance criteria.
-
-1. **Operate safely:** managed user lifecycle, backup retention plus a successful restore drill,
-   alerting/runbooks, access audit, secret rotation, and hard separation of real tenants from demo
-   refresh/truth paths.
-2. **Prove speed in hosting:** instrument the full request path and hold warm p95 Today load under
-   3 seconds, closeout-to-recommendation under 5 seconds, and cached view changes under 1 second
-   for at least seven days. A local health response is not a product latency measurement.
-3. **Prove the decision on real held-out data:** run shadow mode, freeze recommendation snapshots,
-   compare Tobit and comparable-day against both naive baselines on identical dates, and keep every
-   category advisory until its model gate clears.
-4. **Prove the workflow and business:** median closeout under 30 seconds, completion at least 90%
-   of open days, transparent override/adherence reporting, value uncertainty reported, and an
-   explicit paid-continuation decision from the owner at the end of the pilot.
-5. **Make onboarding repeatable:** operator-safe location/coordinates/hours/economics setup,
-   reusable and idempotent POS mappings, import freshness/reconciliation, then a configured
-   category/SKU closeout UI instead of hard-coded sweet/savory inputs.
-
-Do not expand into staffing, ingredients, inventory ordering, or benchmarking until a real café
-clears both the model gate and the paid-continuation gate.

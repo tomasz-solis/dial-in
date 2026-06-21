@@ -1,12 +1,13 @@
 """Persist real Open-Meteo weather into the ``weather`` table (tenant-scoped).
 
-Shared by ``scripts/fetch_weather.py`` and ``scripts/scheduled_refresh.py`` so
-the DB-writing logic lives in the package (importable, testable) and the scripts
-stay thin CLIs. Every write is expected to run on an account-scoped connection
-(``account_connection``), so RLS is satisfied with the low-privilege app role.
+Shared by ``scripts/fetch_weather.py`` and ``scripts/scheduled_refresh.py`` so the
+DB-writing logic lives in the package (importable, testable) and the scripts stay
+thin CLIs. Every write runs on an account-scoped connection, so RLS holds with the
+low-privilege app role.
 
-Only real-forecast rows (those with no ``temp_actual`` yet) are backfilled with
-actuals, so the synthetic generator's historical demo weather is never touched.
+ERA5 reanalysis outcome proxies are only backfilled onto rows the forecast wrote
+(``forecast_source = 'open_meteo'``), so the generator's synthetic history is left
+alone.
 """
 
 from __future__ import annotations

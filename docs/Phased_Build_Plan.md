@@ -9,19 +9,14 @@ pretending we have data we do not have yet.
 
 ## Status (2026-06)
 
-Most phases are substantially implemented; see `docs/PRD.md` §23 for the authoritative snapshot.
-
-- **Done:** Phase 0 (gates green + CI), Phase 3 (design system/views), Phase 4 (decision
-  explanation cards), Phase 5 (Fadri profile + realism metrics), Phase 6 (adherence/attribution),
-  Phase 7 (economics setup), Phase 8 (baselines/pinball/calibration/cost/model gates), Phase 10
-  (hours + daypart curve + modelled sellout estimate), Phase 11 (CSV POS import), Phase 12 (pilot
-  readiness + exportable report). Phase 14 partially: **real weather API (Open-Meteo)** and the
-  **shared environment-layer estimator** are built.
-- **Partial / environment-dependent:** Phase 1 (local Docker/RLS — local runbook per Phase 0,
-  RLS tested in CI), Phase 2/13 (hosted Neon deploy + CI; CI is done, deploy depends on the
-  operator), Phase 9 (data-quality workflows — corrections, closed days, menu version exist).
-- **Not started:** Phase 2 intraday *production* claims (needs POS timestamps), Phase 4 staffing,
-  Phase 5 ingredients, Phase 6 inventory, managed auth, POS API import.
+Most of this plan is built; `docs/PRD.md` §23 is the authoritative snapshot. Phases 0 and 3–12 are
+essentially done — the stabilized scaffold and CI, the design system, the decision-explanation
+cards, the Fadri profile and realism checks, adherence/attribution, economics setup, honest
+measurement and model gates, opening hours with the daypart curve, CSV POS import, and pilot
+readiness. From Phase 14, real weather (Open-Meteo) and the shared environment-layer estimator are
+in. Phase 1 (local Docker/RLS) and Phases 2/13 (hosted Neon deploy) depend on your environment —
+CI proves RLS, but the hosted deploy is on the operator. Not started: production intraday claims
+(they need POS timestamps), staffing, ingredients, inventory, managed auth, and POS APIs.
 
 ## Phase 0 — Stabilize The Current Scaffold
 

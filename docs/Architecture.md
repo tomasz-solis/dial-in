@@ -166,14 +166,12 @@ The demo uses a light censoring correction:
 - Comparable days use same weekday history and scale by drinks sold.
 - If there are too few comparable days, fallback demand is `prepared * 1.15`.
 
-This is the demo default (`comparable_day`). The real-data censoring-aware method from the PRD
-is also implemented: `src/dialin/censoring.py` fits a **right-censored Tobit model on
-log-demand** (sold-out days are right-censored at `prepared`) by EM, with numpy only and no
-SciPy, using a centred log-drinks traffic covariate. The engine selects it via
-`build_recommendations(..., censoring_method="tobit")`, and the choice is recorded in each
-recommendation's config snapshot. Per PRD section 11.1 the Tobit path stays advisory/shadow
-until a café's model passes the section 6.4 ship-gate on held-out data — exactly like the demo
-method. The two levels exist on purpose: demo default, and the real-data Tobit path.
+This is the demo default (`comparable_day`). The real-data method from the PRD is also built:
+`src/dialin/censoring.py` fits a right-censored Tobit model on log-demand (sold-out days are
+censored at `prepared`) by EM, using numpy and a centred log-drinks covariate. The engine picks it
+with `build_recommendations(..., censoring_method="tobit")` and records the choice in the config
+snapshot. Like the demo method, it stays advisory until a café's model passes the section 6.4
+ship-gate on held-out data (PRD 11.1).
 
 ## Forecast Method
 
@@ -203,19 +201,15 @@ computes its age from `forecast_made_at`. A forecast older than `STALE_FORECAST_
 missing row (seasonal-normal fallback), is flagged and forces Low confidence — which widens the
 demand range instead of trusting an old number (PRD 11.4).
 
-Forecasts are **real**: `OpenMeteoWeatherProvider` pulls the daily forecast from the Open-Meteo API
-(free, no API key) for each location's coordinates. `scripts/fetch_weather.py` upserts the next few
-days into the `weather` table with `forecast_made_at` set to fetch time and explicit
-`forecast_source`, then backfills historical reanalysis proxies (`temp_actual`/`rain_actual`) for
-recent past days from the ERA5 archive — but only onto Open-Meteo forecast rows, so the synthetic
-generator's historical weather is never touched. The daily refresh workflow runs this **before**
-the internal demo refresh, so the
-regenerated recommendations read the real forecast (the refresh inserts synthetic context weather
-only when none exists). The app reads everything through `FrameWeatherProvider` unchanged, so a
-live next-day recommendation runs on a real forecast; network or parse failures degrade to the
-seasonal-normal fallback rather than raising. The synthetic generator still seeds historical demo
-weather because its synthetic sales were generated from it. Forward-looking forecasts come from
-the live feed; recent outcome values are reanalysis proxies rather than station observations.
+Forecasts come from a real source. `OpenMeteoWeatherProvider` calls the Open-Meteo API (free, no
+key) for each location's coordinates. `scripts/fetch_weather.py` writes the next few days'
+forecasts into the `weather` table — tagged `forecast_source = 'open_meteo'`, with
+`forecast_made_at` set to fetch time — and once each date has passed it backfills an outcome proxy
+(`temp_actual`/`rain_actual`, from the ERA5 archive). It only touches Open-Meteo rows, so
+the generator's synthetic history is left alone. The daily refresh fetches weather before
+regenerating recommendations, so a live next-day recommendation reads the real forecast; if the
+API fails it falls back to seasonal-normal. ERA5 is reanalysis, so these backfilled fields are
+useful outcome proxies, not station measurements or ground truth.
 
 Weather multiplier:
 
@@ -426,14 +420,13 @@ chronically. See PRD section 12 and `engine._probe_decision`.
 - SKU-level prep is supported by the engine, which never hardcodes `sweet`/`savory` and prices
   each category at its own service quantile (proven by `tests/test_sku_level.py`); only the demo
   data and UI are still two categories. Moving to per-SKU prep is a data/config change.
-- The Service tab can now show a *modelled* sellout/lost-sales estimate
-  (`repository/intraday.estimate_lost_sales`): from an observed last-sale time and the demo
-  traffic curve it estimates full-day demand and units lost after a sellout. It is labelled
-  illustrative and returns nothing without an observed last-sale time — it never invents a sellout.
-- The pooled shared environment layer and cold-start prior now have an estimator and an offline
-  training job (`src/dialin/shared_environment.py`, `scripts/train_shared_environment.py`), with
-  the PRD's governance: it reads only the anonymised `shared_layer_features` view, emits
-  parameters (never raw rows), and refuses sparse segments. The two-account synthetic demo is
-  intentionally too sparse to fit one, so the job reports insufficiency by design — the demo has
-  not trained a real shared layer. The engine consumes a fitted layer via
-  `build_recommendations(environment_layer=...)` when one is supplied.
+- The Service tab can show a modelled sellout/lost-sales estimate
+  (`repository/intraday.estimate_lost_sales`): from an observed last-sale time and the demo traffic
+  curve it estimates full-day demand and units lost after a sellout. It is labelled illustrative,
+  and without a real last-sale time it shows nothing.
+- The pooled environment layer and cold-start prior have an estimator and an offline job
+  (`src/dialin/shared_environment.py`, `scripts/train_shared_environment.py`). It reads only the
+  anonymised `shared_layer_features` view, emits parameters rather than raw rows, and refuses
+  segments that are too sparse. The two-account demo is too sparse to fit one, so the job says so
+  and the engine just uses the demo rules unless you pass it a fitted layer via
+  `build_recommendations(environment_layer=...)`.

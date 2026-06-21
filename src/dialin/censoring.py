@@ -1,22 +1,17 @@
 """Censoring-aware demand estimation for the real-data path (PRD section 12).
 
-The synthetic demo de-censors sold-out days with a light comparable-day method
-(``engine.decensored_demand_series``). The PRD commits the *real* path to a
-**Tobit (Type-I, right-censored) model on log-demand**: sold-out days are
-right-censored observations (true demand is at least ``prepared``), and ordinary
-regression on ``sold`` would converge to the café's own under-prep ceiling.
+The demo de-censors sold-out days with a light comparable-day method
+(``engine.decensored_demand_series``). The PRD's real path is a Tobit (Type-I,
+right-censored) model on log-demand: sold-out days are right-censored (true demand
+is at least ``prepared``), and plain regression on ``sold`` would just relearn the
+café's own under-prep ceiling.
 
-This module implements that Tobit estimator with numpy only — no SciPy — fit by
-**EM** (impute the truncated-normal moments of the censored days, then re-fit),
-which is numerically stable and monotonically increases the likelihood. A small
-traffic covariate (centred log drinks) lets busy censored days be lifted more
-than quiet ones. It returns the same frame contract as the demo method
-(``estimated_demand`` + ``tail_fallback``) so the engine can switch methods
-without other changes.
-
-Per PRD section 11.1, this is the real-data method; until a café's Tobit model
-passes the section 6.4 ship-gate on held-out data it stays advisory/shadow, the
-same as the demo method.
+This module fits that model with numpy (no SciPy), by EM: impute the
+truncated-normal moments of the censored days, then refit. A centred log-drinks
+covariate lets busier censored days be lifted more. It returns the same frame as
+the demo method (``estimated_demand`` + ``tail_fallback``) so the engine can swap
+methods without other changes. Like the demo method, it stays advisory until a
+café's model passes the section 6.4 ship-gate (PRD 11.1).
 """
 
 from __future__ import annotations
