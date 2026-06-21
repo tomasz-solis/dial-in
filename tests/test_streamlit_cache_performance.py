@@ -51,6 +51,18 @@ def test_performance_payload_is_bounded_and_reuses_matched_rows() -> None:
     assert "LIMIT %s" in source
 
 
+def test_bootstrap_checks_runtime_schema_before_view_queries() -> None:
+    source = _function_source("app_bootstrap", "list_locations")
+
+    assert "_runtime_schema_gaps(conn)" in source
+    assert "Database schema is behind this app release" in source
+    assert ("weather", "forecast_source") in streamlit_cache.RUNTIME_SCHEMA_REQUIREMENTS
+    assert (
+        "recommendations",
+        "probe_extra_units",
+    ) in streamlit_cache.RUNTIME_SCHEMA_REQUIREMENTS
+
+
 def test_scorecard_from_rows_matches_repository_summary_shape() -> None:
     """The consolidated Performance payload should preserve scorecard semantics."""
 

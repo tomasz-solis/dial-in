@@ -34,6 +34,19 @@ PERFORMANCE_HISTORY_DAYS = 365
 
 logger = logging.getLogger(__name__)
 
+RUNTIME_SCHEMA_REQUIREMENTS: tuple[tuple[str, str], ...] = (
+    ("accounts", "decensor_probe_opt_in"),
+    ("locations", "latitude"),
+    ("locations", "longitude"),
+    ("recommendations", "is_active"),
+    ("recommendations", "probe_active"),
+    ("recommendations", "probe_extra_units"),
+    ("weather", "actual_observed_at"),
+    ("weather", "forecast_source"),
+    ("pilot_windows", "pilot_window_id"),
+    ("pilot_profile", "responses"),
+)
+
 
 class AppBootstrap(TypedDict):
     """Startup data fetched through one remote database connection."""
@@ -140,6 +153,15 @@ def app_bootstrap(
                 f"got {user_name!r}."
             )
 
+        schema_gaps = _runtime_schema_gaps(conn)
+        if schema_gaps:
+            missing = ", ".join(schema_gaps)
+            raise RuntimeError(
+                "Database schema is behind this app release "
+                f"(missing or inaccessible: {missing}). Apply pending migrations with the "
+                "owner connection: uv run python scripts/migrate.py --target neon"
+            )
+
         conn.execute("SELECT set_config('app.current_account_id', %s, true)", (account_id,))
         locations = fetch_all(
             conn,
@@ -165,6 +187,31 @@ def app_bootstrap(
             if latest_row is not None and latest_row["latest_date"] is not None:
                 latest_date = cast(date, latest_row["latest_date"])
     return {"locations": locations, "latest_date": latest_date}
+
+
+def _runtime_schema_gaps(conn: Connection[Any]) -> list[str]:
+    """Return required runtime columns missing from the app role's visible schema."""
+
+    values_sql = ",\n".join(
+        f"('{table_name}', '{column_name}')"
+        for table_name, column_name in RUNTIME_SCHEMA_REQUIREMENTS
+    )
+    rows = fetch_all(
+        conn,
+        f"""
+        SELECT requirement.table_name, requirement.column_name
+        FROM (VALUES {values_sql}) AS requirement(table_name, column_name)
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns AS visible_column
+            WHERE visible_column.table_schema = current_schema()
+              AND visible_column.table_name = requirement.table_name
+              AND visible_column.column_name = requirement.column_name
+        )
+        ORDER BY requirement.table_name, requirement.column_name
+        """,
+    )
+    return [f"{row['table_name']}.{row['column_name']}" for row in rows]
 
 
 @st.cache_data(ttl=READ_CACHE_TTL_SECONDS, show_spinner=False)
