@@ -73,7 +73,7 @@ def rolling_error_figure(daily: pd.DataFrame) -> go.Figure:
                 name="Rolling error proxy",
             )
         )
-    return finish_figure(fig, title="Rolling forecast error proxy", height=300)
+    return finish_figure(fig, title="Forecast error trend", height=300)
 
 
 def waste_comparison_figure(card: dict[str, Any]) -> go.Figure:
@@ -94,7 +94,7 @@ def waste_comparison_figure(card: dict[str, Any]) -> go.Figure:
             name="Waste proxy",
         )
     )
-    return finish_figure(fig, title="Waste proxy comparison", height=300, y_title="Units")
+    return finish_figure(fig, title="Leftovers proxy", height=300, y_title="Units")
 
 
 def category_error_figure(frame: pd.DataFrame) -> go.Figure:
@@ -117,7 +117,7 @@ def category_error_figure(frame: pd.DataFrame) -> go.Figure:
                 name="Average error proxy",
             )
         )
-    return finish_figure(fig, title="Error proxy by category", height=280, x_title="Units")
+    return finish_figure(fig, title="Error by category", height=280, x_title="Units")
 
 
 def adherence_figure(frame: pd.DataFrame) -> go.Figure:
@@ -134,7 +134,7 @@ def adherence_figure(frame: pd.DataFrame) -> go.Figure:
             name="Rows",
         )
     )
-    return finish_figure(fig, title="Recommendation follow-through", height=280, y_title="Rows")
+    return finish_figure(fig, title="Follow-through", height=280, y_title="Rows")
 
 
 def recommendation_vs_observed_figure(frame: pd.DataFrame) -> go.Figure:
@@ -236,7 +236,7 @@ def calibration_coverage_figure(calibration: dict[str, Any]) -> go.Figure:
         )
     return finish_figure(
         fig,
-        title="Range coverage by confidence label",
+        title="Range coverage",
         height=280,
         y_title="% of days inside range",
     )
@@ -264,7 +264,7 @@ def baseline_pinball_figure(evaluation: dict[str, Any]) -> go.Figure:
         )
     return finish_figure(
         fig,
-        title="Forecast quality vs naive baselines",
+        title="Accuracy vs simple rules",
         height=280,
         y_title="Pinball loss (lower is better)",
     )
@@ -292,7 +292,7 @@ def cost_comparison_figure(cost: dict[str, Any]) -> go.Figure:
         )
     return finish_figure(
         fig,
-        title="Expected mis-prep cost per day (lower is better)",
+        title="Estimated prep-miss cost",
         height=280,
         y_title="Euro per open day",
     )

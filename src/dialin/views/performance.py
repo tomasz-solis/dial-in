@@ -40,21 +40,247 @@ PLOTLY_CONFIG: dict[str, bool] = {"displayModeBar": False, "responsive": True}
 def render(database_url: str, account_id: str, location_id: str) -> None:
     """Render the How-it's-doing tab: model quality, proxies, and corrections."""
 
-    st.subheader("Accuracy and business impact")
+    st.subheader("Performance")
     st.caption(
-        "This view loads matched recommendations, closeouts, baselines, and demo truth metrics."
+        "Start with the owner summary. Open Advanced when you need model diagnostics, data "
+        "quality, or the pilot report."
     )
     load_key = f"load_performance:{account_id}:{location_id}"
-    if st.button("Load analysis", type="primary", key=f"{load_key}:button"):
+    if st.button("Load performance", type="primary", key=f"{load_key}:button"):
         st.session_state[load_key] = True
     if st.session_state.get(load_key) is not True:
-        st.info("Load the analysis when you need the full model-quality readout.")
+        st.info("Load performance when you want the owner summary or advanced analysis.")
         return
 
     payload = fetch_performance_payload(database_url, account_id, location_id)
+    view = st.radio(
+        "Performance view",
+        ("Owner summary", "Advanced analysis"),
+        horizontal=True,
+        key=f"performance_view:{account_id}:{location_id}",
+    )
+    if view == "Owner summary":
+        _render_owner_summary(payload)
+        return
+
     _render_accuracy_tab(payload, account_id, location_id)
     _render_pilot_report(payload, account_id, location_id)
     _render_correction_audit(payload["corrections"])
+
+
+def _render_owner_summary(payload: PerformancePayload) -> None:
+    """Render the owner-first business readout without model jargon."""
+
+    card = payload["scorecard"]
+    matched = pd.DataFrame(payload["outcomes"])
+    history = payload["frames"].get("daily_category_metrics", pd.DataFrame())
+    if "input_source" in history.columns:
+        history = history[history["input_source"] != "imputed"]
+    economics = _economics_costs_from_rows(payload["economics"])
+    cost = expected_misprep_cost(
+        matched,
+        history,
+        economics,
+        demand_col="sold",
+        exclude_censored=True,
+    )
+    health = daily_operations_health(
+        payload["frames"].get("daily_metrics", pd.DataFrame()),
+        history,
+        pd.DataFrame(card.get("rows", [])),
+        pd.DataFrame(payload["recent_imports"]),
+    )
+
+    st.markdown("### Owner summary")
+    title, body, tone = _owner_verdict(cost)
+    getattr(st, tone)(f"**{title}**  \n{body}")
+
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.proof_card(
+                    "Estimated margin protected",
+                    _owner_savings_value(cost),
+                    _owner_savings_caption(cost),
+                ),
+                ui.proof_card(
+                    "Dial In prep misses",
+                    _eur_per_day(cost.get("model_cost_per_day")),
+                    "Estimated waste plus missed margin per open day.",
+                ),
+                ui.proof_card(
+                    "Simple-rule prep misses",
+                    _eur_per_day(cost.get("best_baseline_cost_per_day")),
+                    "Better of last week and the four-week average.",
+                ),
+                ui.proof_card(
+                    "Evidence",
+                    f"{int(cost.get('dates') or 0)} open days",
+                    f"{int(cost.get('excluded_censored_rows') or 0)} sold-out rows excluded.",
+                ),
+            )
+        ),
+        unsafe_allow_html=True,
+    )
+
+    next_title, next_body = _owner_next_action(payload, health, cost)
+    st.markdown("#### What to do next")
+    st.info(f"**{next_title}**  \n{next_body}")
+
+    if cost.get("model_cost_per_day") is not None:
+        left, right = st.columns(2, gap="large")
+        with left:
+            st.markdown("#### Estimated cost of prep misses")
+            st.caption("Lower is better. This combines leftover cost and estimated missed margin.")
+            st.plotly_chart(
+                charts.cost_comparison_figure(cost),
+                width="stretch",
+                config=PLOTLY_CONFIG,
+                key="owner_cost_comparison",
+            )
+        with right:
+            st.markdown("#### Leftovers proxy")
+            st.caption(
+                "Prepared minus sold. Lower can be good, but not if it comes from selling out."
+            )
+            st.plotly_chart(
+                _waste_comparison_chart(card),
+                width="stretch",
+                config=PLOTLY_CONFIG,
+                key="owner_waste_comparison",
+            )
+
+    st.markdown(
+        ui.card_grid(
+            (
+                ui.proof_card(
+                    "Sellout rows",
+                    str(int(card.get("actual_sellouts", 0))),
+                    "True demand may be higher than recorded sales.",
+                ),
+                ui.proof_card(
+                    "Recommendation followed",
+                    _owner_adherence_value(card),
+                    "Followed and overridden category decisions.",
+                ),
+                ui.proof_card(
+                    "Missing closeouts",
+                    _optional_percent(health.get("missing_closeout_rate")),
+                    "Keep this low so the comparison stays credible.",
+                ),
+            )
+        ),
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("How to read this summary"):
+        st.markdown(
+            "- **Estimated margin protected** is a modelled comparison, not accounting profit.\n"
+            "- The **95% interval** describes uncertainty in the average gain, not the range "
+            "expected on an individual day.\n"
+            "- **Lower prep-miss cost is better**, provided sellouts do not rise.\n"
+            "- Sold-out rows are excluded from the euro comparison because true demand is hidden.\n"
+            "- Treat fewer than 28 open days as early evidence, not a business verdict."
+        )
+
+
+def _owner_verdict(cost: dict[str, Any]) -> tuple[str, str, str]:
+    """Return a plain-language owner verdict and Streamlit message tone."""
+
+    dates = int(cost.get("dates") or 0)
+    savings = cost.get("savings_per_day_vs_best")
+    if savings is None or dates == 0:
+        return "Not enough evidence yet", "Keep recording clean closeouts.", "info"
+    if dates < 28:
+        return (
+            "Early signal only",
+            f"The comparison has {dates} open days; wait for at least 28 before judging it.",
+            "info",
+        )
+    if float(savings) > 0:
+        if cost.get("savings_robust") is False:
+            return (
+                "Early positive signal",
+                f"Prep-miss cost is €{float(savings):.2f}/open day lower than the better simple "
+                "rule, but its approximate 95% interval still includes zero — keep collecting "
+                "evidence.",
+                "info",
+            )
+        return (
+            "Dial In looks promising",
+            f"Estimated prep-miss cost is €{float(savings):.2f} lower per open day than the "
+            "better simple rule, and its approximate 95% interval stays above zero.",
+            "success",
+        )
+    return (
+        "Dial In is not earning its keep yet",
+        f"Estimated prep-miss cost is €{abs(float(savings)):.2f} higher per open day than the "
+        "better simple rule.",
+        "warning",
+    )
+
+
+def _owner_savings_value(cost: dict[str, Any]) -> str:
+    """Format the modelled daily savings difference for an owner."""
+
+    value = cost.get("savings_per_day_vs_best")
+    if value is None:
+        return "Not enough data"
+    sign = "+" if float(value) > 0 else ""
+    return f"{sign}€{float(value):.2f}/open day"
+
+
+def _owner_savings_caption(cost: dict[str, Any]) -> str:
+    """Explain the modelled difference without confusing uncertainty with spread."""
+
+    low = cost.get("savings_ci_low")
+    high = cost.get("savings_ci_high")
+    if low is None or high is None:
+        return "Versus the better simple prep rule; modelled, not booked profit."
+    return (
+        f"Approx. 95% interval: €{float(low):.2f} to €{float(high):.2f}; "
+        "modelled, not booked profit."
+    )
+
+
+def _owner_adherence_value(card: dict[str, Any]) -> str:
+    """Format followed recommendations as a compact owner-facing ratio."""
+
+    attributed = int(card.get("attributed_rows", 0))
+    if attributed == 0:
+        return "Not tracked yet"
+    followed = int(card.get("adhered_rows", 0))
+    return f"{followed}/{attributed} ({followed / attributed:.0%})"
+
+
+def _owner_next_action(
+    payload: PerformancePayload,
+    health: dict[str, Any],
+    cost: dict[str, Any],
+) -> tuple[str, str]:
+    """Return the highest-value next action for the owner summary."""
+
+    if any(str(row.get("values_source", "default")) == "default" for row in payload["economics"]):
+        return "Confirm costs and prices", "The euro estimate is only as good as the economics."
+    missing = health.get("missing_closeout_rate")
+    if missing is not None and float(missing) > 0.1:
+        return "Close the data gaps", "Complete daily closeouts before judging performance."
+    if int(cost.get("dates") or 0) < 28:
+        return (
+            "Keep it advisory",
+            "Collect at least 28 clean open days before acting on the result.",
+        )
+    if cost.get("beats_baselines") is not True:
+        return "Review the weak categories", "Advanced analysis shows where Dial In trails."
+    if cost.get("savings_robust") is not True:
+        return (
+            "Keep collecting evidence",
+            "The estimated gain's approximate 95% interval still includes zero.",
+        )
+    return (
+        "Protect the gain",
+        "Keep tracking sellouts and overrides while using the recommendation.",
+    )
 
 
 def _render_pilot_report(
@@ -111,10 +337,12 @@ def _render_accuracy_tab(
     if "input_source" in history.columns:
         history = history[history["input_source"] != "imputed"]
     economics = _economics_costs_from_rows(payload["economics"])
+    st.markdown("### Advanced analysis")
     st.caption(
         "These are observed proxies. Sold-out days hide true demand, so the app does not "
         "treat sales alone as full forecast accuracy."
     )
+    _render_advanced_reading_guide()
     _render_operations_health(
         frames=frames,
         imports=pd.DataFrame(payload["recent_imports"]),
@@ -130,7 +358,11 @@ def _render_accuracy_tab(
     daily = _daily_accuracy_frame(frame)
     left, right = st.columns(2, gap="large")
     with left:
-        st.markdown("#### Forecast error proxy is tracked over time")
+        st.markdown("#### Forecast error trend")
+        st.caption(
+            "Closer to zero is better. Above zero means the recommendation ran higher than "
+            "sales; below zero means it ran lower. Look for a persistent direction, not one day."
+        )
         st.plotly_chart(
             _rolling_error_chart(daily),
             width="stretch",
@@ -138,7 +370,11 @@ def _render_accuracy_tab(
             key="accuracy_rolling_error",
         )
     with right:
-        st.markdown("#### Waste proxy compares actual prep with Dial In")
+        st.markdown("#### Waste proxy")
+        st.caption(
+            "Prepared minus sold. Lower suggests fewer leftovers, but sold-out rows can hide "
+            "missed demand and this is not confirmed physical waste."
+        )
         st.plotly_chart(
             _waste_comparison_chart(card),
             width="stretch",
@@ -148,7 +384,11 @@ def _render_accuracy_tab(
 
     lower_left, lower_right = st.columns(2, gap="large")
     with lower_left:
-        st.markdown("#### Category errors show where attention belongs")
+        st.markdown("#### Error by category")
+        st.caption(
+            "Bars far from zero need attention. Positive means prep ran high versus sales; "
+            "negative means it ran low."
+        )
         st.plotly_chart(
             _category_error_chart(frame),
             width="stretch",
@@ -156,7 +396,11 @@ def _render_accuracy_tab(
             key="accuracy_category_error",
         )
     with lower_right:
-        st.markdown("#### Followed and overridden rows stay visible")
+        st.markdown("#### Follow-through")
+        st.caption(
+            "Separates model performance from operator choice. Overrides are useful evidence, "
+            "especially when a reason was recorded."
+        )
         st.plotly_chart(
             _adherence_chart(frame),
             width="stretch",
@@ -164,7 +408,11 @@ def _render_accuracy_tab(
             key="accuracy_adherence",
         )
 
-    st.markdown("#### Recommendation vs observed closeout by category")
+    st.markdown("#### Prep recommendation vs closeout")
+    st.caption(
+        "Compare recommended prep with actual prep and sales. A large gap between actual prep "
+        "and the recommendation is an override; sold equal to prepared may be a hidden stockout."
+    )
     st.plotly_chart(
         _recommendation_vs_observed_chart(frame),
         width="stretch",
@@ -255,16 +503,39 @@ def _render_model_quality(
             config=PLOTLY_CONFIG,
             key="model_quality_calibration",
         )
+        st.caption(
+            "Target is roughly 75-85%. Lower means ranges are too narrow; much higher can mean "
+            "they are too wide to be useful."
+        )
     with quality_right:
         st.plotly_chart(
             charts.baseline_pinball_figure(evaluation),
             width="stretch",
             config=PLOTLY_CONFIG,
             key="model_quality_baselines",
-    )
+        )
+        st.caption(
+            "Lower is better. Dial In must beat both simple rules on the same usable dates."
+        )
 
     _render_truth_quality(matched, history, economics, account_id, location_id)
     _render_model_gates(matched, history, economics)
+
+
+def _render_advanced_reading_guide() -> None:
+    """Explain the advanced view before the diagnostic charts begin."""
+
+    with st.expander("How to read the advanced analysis"):
+        st.markdown(
+            "1. **Start with expected cost:** lower is better, but it is modelled rather than "
+            "booked profit.\n"
+            "2. **Check the gate:** a category remains advisory until evidence, calibration, "
+            "bias, censoring, and both baselines pass.\n"
+            "3. **Read direction, not noise:** repeated positive or negative error matters more "
+            "than one unusual day.\n"
+            "4. **Check data health last:** missing closeouts, POS rejects, and frequent sellouts "
+            "can make every performance chart less trustworthy."
+        )
 
 
 def _render_operations_health(

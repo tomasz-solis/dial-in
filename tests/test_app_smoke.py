@@ -15,7 +15,7 @@ from dialin import formatting, streamlit_cache
 from dialin import ui_components as ui
 from dialin import views as app_views
 from dialin.pos_import import DailySalesRollup, PosImportError, PosImportPreview
-from dialin.streamlit_cache import SetupPayload
+from dialin.streamlit_cache import PerformancePayload, SetupPayload
 from dialin.views import closeout, performance, service, setup, today
 
 
@@ -550,6 +550,96 @@ def test_accuracy_frame_uses_observed_proxy_metrics() -> None:
     assert frame.iloc[0]["dialin_waste_proxy"] == 4
     assert frame.iloc[0]["error_proxy"] == 4
     assert not bool(frame.iloc[0]["short_proxy"])
+
+
+def test_owner_verdict_waits_for_evidence_then_uses_business_language() -> None:
+    assert performance._owner_verdict({"dates": 0}) == (
+        "Not enough evidence yet",
+        "Keep recording clean closeouts.",
+        "info",
+    )
+    assert performance._owner_verdict(
+        {"dates": 12, "savings_per_day_vs_best": 2.5}
+    )[0] == "Early signal only"
+    robust_verdict = performance._owner_verdict(
+        {"dates": 30, "savings_per_day_vs_best": 2.5, "savings_robust": True}
+    )
+    assert robust_verdict[0] == "Dial In looks promising"
+    assert robust_verdict[2] == "success"
+    # A positive mean whose confidence interval includes zero must not read as proven.
+    noisy_verdict = performance._owner_verdict(
+        {"dates": 30, "savings_per_day_vs_best": 2.5, "savings_robust": False}
+    )
+    assert noisy_verdict[0] == "Early positive signal"
+    assert noisy_verdict[2] == "info"
+    assert performance._owner_verdict(
+        {"dates": 30, "savings_per_day_vs_best": -1.25}
+    )[0] == "Dial In is not earning its keep yet"
+
+
+def test_owner_summary_formats_savings_and_adherence_without_overclaiming() -> None:
+    assert performance._owner_savings_value({"savings_per_day_vs_best": 2.5}) == (
+        "+\N{EURO SIGN}2.50/open day"
+    )
+    assert performance._owner_savings_value(
+        {"savings_per_day_vs_best": 2.5, "savings_std_error": 0.4}
+    ) == "+\N{EURO SIGN}2.50/open day"
+    assert performance._owner_savings_caption(
+        {"savings_ci_low": 1.7, "savings_ci_high": 3.3}
+    ) == (
+        "Approx. 95% interval: \N{EURO SIGN}1.70 to \N{EURO SIGN}3.30; "
+        "modelled, not booked profit."
+    )
+    assert performance._owner_savings_value({"savings_per_day_vs_best": None}) == (
+        "Not enough data"
+    )
+    assert performance._owner_adherence_value(
+        {"attributed_rows": 4, "adhered_rows": 3}
+    ) == "3/4 (75%)"
+
+
+def test_owner_next_action_prioritizes_unconfirmed_economics() -> None:
+    payload: PerformancePayload = {
+        "scorecard": {},
+        "outcomes": [],
+        "frames": {},
+        "economics": [{"values_source": "default"}],
+        "recent_imports": [],
+        "corrections": [],
+        "pilot_windows": [],
+        "pilot_profile": None,
+    }
+
+    assert performance._owner_next_action(
+        payload,
+        {"missing_closeout_rate": 0.0},
+        {"dates": 30, "beats_baselines": True},
+    ) == (
+        "Confirm costs and prices",
+        "The euro estimate is only as good as the economics.",
+    )
+
+
+def test_owner_next_action_does_not_overclaim_uncertain_gain() -> None:
+    payload: PerformancePayload = {
+        "scorecard": {},
+        "outcomes": [],
+        "frames": {},
+        "economics": [{"values_source": "confirmed"}],
+        "recent_imports": [],
+        "corrections": [],
+        "pilot_windows": [],
+        "pilot_profile": None,
+    }
+
+    assert performance._owner_next_action(
+        payload,
+        {"missing_closeout_rate": 0.0},
+        {"dates": 30, "beats_baselines": True, "savings_robust": False},
+    ) == (
+        "Keep collecting evidence",
+        "The estimated gain's approximate 95% interval still includes zero.",
+    )
 
 
 def test_entry_defaults_preserve_existing_sellout_time() -> None:

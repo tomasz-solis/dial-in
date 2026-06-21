@@ -58,6 +58,7 @@ def test_waste_comparison_figure_uses_bar_not_pie() -> None:
 
     assert len(fig.data) == 1
     assert fig.data[0].type == "bar"
+    assert fig.layout.title.text == "Leftovers proxy"
 
 
 def test_recommendation_vs_observed_splits_category_rows() -> None:
@@ -140,5 +141,18 @@ def test_baseline_pinball_figure_skips_missing_losses() -> None:
 
     assert len(fig.data) == 1
     assert list(fig.data[0].x) == ["Dial In", "Last week"]
+    assert fig.layout.title.text == "Accuracy vs simple rules"
+
+
+def test_cost_comparison_figure_uses_short_business_title() -> None:
+    fig = charts.cost_comparison_figure(
+        {
+            "model_cost_per_day": 8.5,
+            "last_week_cost_per_day": 11.0,
+            "trailing_cost_per_day": 10.0,
+        }
+    )
+
+    assert fig.layout.title.text == "Estimated prep-miss cost"
 
 
