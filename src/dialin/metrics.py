@@ -267,6 +267,12 @@ def expected_misprep_cost(
     realised demand can change the ordering between two prep decisions; it is
     not a defensible savings estimate. With ``demand_col="true_demand"`` (demo
     lens), censored rows can be included because latent demand is known.
+
+    The savings figure carries its uncertainty: ``savings_std_error`` and the
+    approximate 95% interval (``savings_ci_low``/``savings_ci_high``) use a
+    seven-day Newey-West standard error over per-day savings. This allows for
+    short-run serial correlation instead of treating adjacent trading days as
+    independent. ``savings_robust`` is True only when that interval clears zero.
     """
 
     empty: dict[str, Any] = {
@@ -279,6 +285,10 @@ def expected_misprep_cost(
         "trailing_cost_per_day": None,
         "best_baseline_cost_per_day": None,
         "savings_per_day_vs_best": None,
+        "savings_std_error": None,
+        "savings_ci_low": None,
+        "savings_ci_high": None,
+        "savings_robust": None,
         "beats_baselines": None,
     }
     if matched.empty or not economics:
@@ -303,17 +313,30 @@ def expected_misprep_cost(
         under_cost, over_cost = economics[category]
         return over_cost * max(prep - demand, 0.0) + under_cost * max(demand - prep, 0.0)
 
-    totals = {"model": 0.0, "last_week": 0.0, "trailing": 0.0}
+    per_date: dict[Any, dict[str, float]] = {}
     for _, row in frame.iterrows():
         category = str(row["category"])
         demand = float(row[demand_col])
-        totals["model"] += row_cost(float(row["recommended_prep"]), demand, category)
-        totals["last_week"] += row_cost(math.ceil(float(row["last_week_sold"])), demand, category)
-        totals["trailing"] += row_cost(math.ceil(float(row["trailing_4wk_sold"])), demand, category)
+        bucket = per_date.setdefault(row["date"], {"model": 0.0, "last_week": 0.0, "trailing": 0.0})
+        bucket["model"] += row_cost(float(row["recommended_prep"]), demand, category)
+        bucket["last_week"] += row_cost(math.ceil(float(row["last_week_sold"])), demand, category)
+        bucket["trailing"] += row_cost(math.ceil(float(row["trailing_4wk_sold"])), demand, category)
 
-    n_dates = int(frame["date"].nunique())
+    n_dates = len(per_date)
+    totals = {
+        key: sum(bucket[key] for bucket in per_date.values())
+        for key in ("model", "last_week", "trailing")
+    }
     per_day = {key: value / n_dates for key, value in totals.items()}
-    best_baseline = min(per_day["last_week"], per_day["trailing"])
+    best_key = "last_week" if per_day["last_week"] <= per_day["trailing"] else "trailing"
+    best_baseline = per_day[best_key]
+    mean_savings = best_baseline - per_day["model"]
+    # Report uncertainty around the mean, allowing for short-run serial correlation.
+    # A 95% interval that still clears zero is what makes a positive gain credible.
+    daily_savings = [bucket[best_key] - bucket["model"] for bucket in per_date.values()]
+    std_error = _standard_error(daily_savings)
+    ci_low = mean_savings - 1.96 * std_error if std_error is not None else None
+    ci_high = mean_savings + 1.96 * std_error if std_error is not None else None
     return {
         "rows": len(frame),
         "dates": n_dates,
@@ -323,9 +346,33 @@ def expected_misprep_cost(
         "last_week_cost_per_day": round(per_day["last_week"], 2),
         "trailing_cost_per_day": round(per_day["trailing"], 2),
         "best_baseline_cost_per_day": round(best_baseline, 2),
-        "savings_per_day_vs_best": round(best_baseline - per_day["model"], 2),
+        "savings_per_day_vs_best": round(mean_savings, 2),
+        "savings_std_error": None if std_error is None else round(std_error, 2),
+        "savings_ci_low": None if ci_low is None else round(ci_low, 2),
+        "savings_ci_high": None if ci_high is None else round(ci_high, 2),
+        "savings_robust": None if ci_low is None else bool(ci_low > 0),
         "beats_baselines": per_day["model"] < best_baseline,
     }
+
+
+def _standard_error(values: list[float], *, max_lag: int = 7) -> float | None:
+    """Return a Newey-West standard error, or None with fewer than two samples."""
+
+    count = len(values)
+    if count < 2:
+        return None
+    mean = sum(values) / count
+    residuals = [value - mean for value in values]
+    lag_limit = min(max(max_lag, 0), count - 1)
+    long_run_variance = sum(value**2 for value in residuals) / count
+    for lag in range(1, lag_limit + 1):
+        covariance = sum(
+            residuals[index] * residuals[index - lag]
+            for index in range(lag, count)
+        ) / count
+        bartlett_weight = 1 - lag / (lag_limit + 1)
+        long_run_variance += 2 * bartlett_weight * covariance
+    return math.sqrt(max(long_run_variance, 0.0) / count)
 
 
 def daily_operations_health(
@@ -515,7 +562,10 @@ def model_gate_report(
             1.0,
         )
         beats = evaluation.get("beats_baselines") is True
-        cost_positive = cost.get("beats_baselines") is True
+        # Going live needs the money advantage to clear day-to-day noise, not just
+        # win on the average day: a positive mean inside its own 95% interval is
+        # not yet evidence (PRD section 6.5).
+        cost_positive = cost.get("savings_robust") is True
         live_ready = all((enough_days, calibrated, low_censoring, unbiased, beats, cost_positive))
         reports.append(
             {

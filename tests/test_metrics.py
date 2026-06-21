@@ -7,6 +7,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
+import dialin.metrics as metrics
 from dialin.metrics import (
     calibration_coverage,
     calibration_coverage_truth,
@@ -256,6 +257,58 @@ def test_expected_misprep_cost_handles_empty_inputs() -> None:
     empty = expected_misprep_cost(pd.DataFrame(), _weekly_sweet_history(), {}, demand_col="sold")
     assert empty["beats_baselines"] is None
     assert empty["model_cost_per_day"] is None
+    assert empty["savings_std_error"] is None
+    assert empty["savings_robust"] is None
+
+
+def test_expected_misprep_cost_reports_savings_uncertainty() -> None:
+    """Headline savings must carry uncertainty so a few lucky days are not a verdict."""
+
+    # Ten same-weekday rows so the trailing-4wk baseline resolves on the last four.
+    dates = pd.date_range("2026-01-03", periods=10, freq="7D").date
+    history = pd.DataFrame(
+        {
+            "date": dates,
+            "category": ["sweet"] * 10,
+            "sold": [40, 41, 42, 43, 44, 45, 46, 47, 48, 49],
+        }
+    )
+    # The model beats the baseline on every evaluated day, but by a different
+    # margin each day, so the per-day savings has a real, non-zero spread.
+    matched = pd.DataFrame(
+        {
+            "date": list(dates[6:10]),
+            "category": ["sweet"] * 4,
+            "recommended_prep": [55, 54, 60, 58],
+            "service_quantile": [0.78] * 4,
+            "true_demand": [72, 72, 72, 78],
+            "sold_out": [True, True, True, True],
+        }
+    )
+    economics = {"sweet": (3.2, 0.9)}
+
+    cost = expected_misprep_cost(matched, history, economics, demand_col="true_demand")
+
+    assert cost["dates"] == 4
+    assert cost["savings_std_error"] is not None
+    assert cost["savings_std_error"] > 0
+    # A 95% interval is the mean plus/minus ~1.96 standard errors.
+    assert cost["savings_ci_low"] == pytest.approx(
+        cost["savings_per_day_vs_best"] - 1.96 * cost["savings_std_error"], abs=0.01
+    )
+    assert cost["savings_robust"] is (cost["savings_ci_low"] > 0)
+
+
+def test_savings_standard_error_allows_for_serial_correlation() -> None:
+    """Adjacent positive residuals should widen uncertainty versus an IID estimate."""
+
+    values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    serial_error = metrics._standard_error(values)
+    iid_error = metrics._standard_error(values, max_lag=0)
+
+    assert serial_error is not None
+    assert iid_error is not None
+    assert serial_error > iid_error
 
 
 def test_daily_operations_health_reports_data_path_rates() -> None:
