@@ -19,6 +19,7 @@ from dialin.demo_freshness import ensure_demo_data_fresh
 from dialin.streamlit_cache import (
     app_bootstrap,
     clear_cached_reads,
+    fetch_next_open_business_date,
 )
 
 VIEW_LABELS = ("Today", "Close out", "How it's doing", "Service", "Setup")
@@ -72,7 +73,12 @@ def main() -> None:
 
     _init_cursor(latest_date, today)
     closeout_date = st.session_state["replay_date"]
-    target_date = closeout_date + timedelta(days=1)
+    target_date = _resolve_prep_target(
+        settings.database_url,
+        account_id,
+        str(location["location_id"]),
+        closeout_date,
+    )
     _render_app_header(location, closeout_date, target_date)
     active_view = _render_view_selector()
     _render_active_view(
@@ -280,6 +286,24 @@ def _init_cursor(latest_date: date, today: date) -> None:
 
     if "replay_date" not in st.session_state:
         st.session_state["replay_date"] = today if today >= latest_date else latest_date
+
+
+def _resolve_prep_target(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+    closeout_date: date,
+) -> date:
+    """Return the prep date: the nearest open day after closeout, skipping closed days.
+
+    Falls back to the next calendar day only when no open day exists in the
+    lookahead window, so the header still shows a date rather than nothing.
+    """
+
+    next_open = fetch_next_open_business_date(
+        database_url, account_id, location_id, closeout_date
+    )
+    return next_open or closeout_date + timedelta(days=1)
 
 
 def _render_app_header(

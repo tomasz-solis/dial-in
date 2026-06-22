@@ -156,6 +156,40 @@ def test_replay_status_caption_labels_cursor_mode() -> None:
     )
 
 
+def test_resolve_prep_target_skips_closed_next_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The prep target should follow the nearest open day from the hours plan."""
+
+    monkeypatch.setattr(
+        app,
+        "fetch_next_open_business_date",
+        lambda *_args, **_kwargs: date(2026, 6, 23),
+    )
+
+    target = app._resolve_prep_target(
+        "postgresql://example", "acct_fadri", "loc_fadri_main", date(2026, 6, 21)
+    )
+
+    assert target == date(2026, 6, 23)
+
+
+def test_resolve_prep_target_falls_back_to_next_calendar_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no open day in the horizon the header still shows the next day."""
+
+    monkeypatch.setattr(
+        app,
+        "fetch_next_open_business_date",
+        lambda *_args, **_kwargs: None,
+    )
+
+    target = app._resolve_prep_target(
+        "postgresql://example", "acct_fadri", "loc_fadri_main", date(2026, 6, 21)
+    )
+
+    assert target == date(2026, 6, 22)
+
+
 def test_app_header_html_tolerates_stale_ui_module(monkeypatch: pytest.MonkeyPatch) -> None:
     """The app header should render even when Streamlit holds an older UI module."""
 

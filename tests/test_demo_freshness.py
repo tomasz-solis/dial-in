@@ -57,3 +57,31 @@ def test_recommendation_refresh_covers_stale_tail_and_tomorrow() -> None:
         date(2026, 6, 6),
         date(2026, 6, 7),
     )
+
+
+def test_horizon_extends_to_nearest_open_prep_day() -> None:
+    """A closed next day should pull weather and recommendation coverage forward."""
+
+    # Today is Sunday June 21; Monday is closed, so the nearest open prep day is
+    # Tuesday June 23. Both context and recommendation horizons must reach it.
+    tuesday = date(2026, 6, 23)
+
+    assert context_dates_to_ensure(date(2026, 6, 21), date(2026, 6, 21), tuesday) == (
+        date(2026, 6, 21),
+        date(2026, 6, 22),
+        date(2026, 6, 23),
+    )
+    assert recommendation_refresh_dates(date(2026, 6, 21), date(2026, 6, 21), tuesday) == (
+        date(2026, 6, 21),
+        date(2026, 6, 22),
+        date(2026, 6, 23),
+    )
+
+
+def test_horizon_never_shrinks_below_default_lookahead() -> None:
+    """An already-open next day keeps the standard one-day lookahead."""
+
+    # The nearest open day is tomorrow, so the explicit end must not shorten it.
+    assert recommendation_refresh_dates(
+        date(2026, 6, 6), date(2026, 6, 6), date(2026, 6, 6)
+    ) == (date(2026, 6, 6), date(2026, 6, 7))

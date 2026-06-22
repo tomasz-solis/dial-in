@@ -167,6 +167,69 @@ def upsert_location_hours(
         )
 
 
+# How many days ahead to scan for the next open day before giving up. Two weeks
+# covers any normal weekly closed-day pattern (and a café closed every weekday is
+# a setup problem the readiness checks already flag, not a date to invent).
+NEXT_OPEN_HORIZON_DAYS = 14
+
+
+def next_open_business_date(
+    rows: list[dict[str, Any]],
+    after: date,
+    open_days: list[int] | None = None,
+    horizon_days: int = NEXT_OPEN_HORIZON_DAYS,
+) -> date | None:
+    """Return the nearest open business date strictly after ``after``.
+
+    The opening-hours plan is resolved per candidate day, so an effective-dated
+    or newly closed weekday is honored the moment hours are saved. Returns
+    ``None`` when no day inside the horizon is open (for example, every weekday
+    is marked closed).
+    """
+
+    candidate = after + timedelta(days=1)
+    for _ in range(max(horizon_days, 0)):
+        if bool(effective_location_hours(rows, candidate, open_days=open_days)["is_open"]):
+            return candidate
+        candidate += timedelta(days=1)
+    return None
+
+
+def fetch_next_open_business_date(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+    after: date,
+    horizon_days: int = NEXT_OPEN_HORIZON_DAYS,
+) -> date | None:
+    """Return the nearest open business date after ``after`` from stored hours."""
+
+    with account_connection(database_url, account_id) as conn:
+        location = fetch_one(
+            conn,
+            """
+            SELECT open_days
+            FROM locations
+            WHERE account_id = %s AND location_id = %s
+            """,
+            (account_id, location_id),
+        )
+        rows = fetch_all(
+            conn,
+            """
+            SELECT day_of_week, is_open, open_time, close_time,
+                   effective_from, effective_to, source
+            FROM location_hours
+            WHERE account_id = %s AND location_id = %s
+            """,
+            (account_id, location_id),
+        )
+    open_days = [] if location is None else list(location.get("open_days") or [])
+    return next_open_business_date(
+        rows, after, open_days=open_days, horizon_days=horizon_days
+    )
+
+
 def effective_location_hours(
     rows: list[dict[str, Any]],
     business_date: date,

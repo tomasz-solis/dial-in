@@ -14,6 +14,7 @@ from dialin.repository import (
     effective_location_hours,
     expected_intraday_drinks,
     insert_manual_event,
+    next_open_business_date,
     normalize_menu_version,
     normalize_override_reason,
     recommendation_adhered,
@@ -110,6 +111,64 @@ def test_effective_location_hours_falls_back_to_open_days() -> None:
     assert hours["is_open"] is True
     assert hours["open_time"] == time(8, 0)
     assert hours["close_time"] == time(16, 0)
+
+
+def test_next_open_business_date_skips_a_closed_weekday() -> None:
+    """A closed Monday should push the prep target to the next open day."""
+
+    monday_closed = {
+        "day_of_week": 0,
+        "is_open": False,
+        "open_time": None,
+        "close_time": None,
+        "effective_from": date(2026, 6, 22),
+        "effective_to": None,
+        "source": "owner_confirmed",
+    }
+    open_week = [1, 2, 3, 4, 5, 6]
+
+    # Closing out Sunday June 21 should skip closed Monday June 22 for Tuesday June 23.
+    assert next_open_business_date(
+        [monday_closed], date(2026, 6, 21), open_days=open_week
+    ) == date(2026, 6, 23)
+
+
+def test_next_open_business_date_returns_next_calendar_day_when_open() -> None:
+    """With no closed days the prep target stays the next calendar day."""
+
+    assert next_open_business_date(
+        [], date(2026, 6, 23), open_days=[0, 1, 2, 3, 4, 5, 6]
+    ) == date(2026, 6, 24)
+
+
+def test_next_open_business_date_returns_none_when_never_open() -> None:
+    """A location with no open day in the horizon yields no prep target."""
+
+    assert next_open_business_date([], date(2026, 6, 21), open_days=[]) is None
+
+
+def test_next_open_business_date_honors_effective_dated_closure() -> None:
+    """A future-dated closure only applies on and after its effective date."""
+
+    closure = {
+        "day_of_week": 0,
+        "is_open": False,
+        "open_time": None,
+        "close_time": None,
+        "effective_from": date(2026, 6, 29),
+        "effective_to": None,
+        "source": "owner_confirmed",
+    }
+    open_week = [0, 1, 2, 3, 4, 5, 6]
+
+    # The closure starts June 29, so the June 22 Monday is still open.
+    assert next_open_business_date(
+        [closure], date(2026, 6, 21), open_days=open_week
+    ) == date(2026, 6, 22)
+    # Closing out the week before the next Monday lands on the closed June 29.
+    assert next_open_business_date(
+        [closure], date(2026, 6, 28), open_days=open_week
+    ) == date(2026, 6, 30)
 
 
 def test_expected_intraday_drinks_prefers_observed_closeout() -> None:

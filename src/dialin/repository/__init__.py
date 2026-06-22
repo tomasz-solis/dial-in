@@ -29,7 +29,9 @@ from dialin.repository.intraday import (
 from dialin.repository.locations import (
     effective_location_hours,
     fetch_location_hours_plan,
+    fetch_next_open_business_date,
     list_locations,
+    next_open_business_date,
     upsert_location_hours,
 )
 from dialin.repository.pilot import (
@@ -80,6 +82,7 @@ __all__ = [
     "fetch_intraday_demo",
     "fetch_latest_recommendations",
     "fetch_location_hours_plan",
+    "fetch_next_open_business_date",
     "fetch_pilot_profile",
     "fetch_pilot_windows",
     "fetch_recent_pos_import_runs",
@@ -94,6 +97,7 @@ __all__ = [
     "list_locations",
     "mark_closed_day",
     "mark_missing_input",
+    "next_open_business_date",
     "normalize_menu_version",
     "normalize_override_reason",
     "persist_recommendations",

@@ -580,6 +580,24 @@ def fetch_location_hours_plan(
 
 
 @st.cache_data(ttl=READ_CACHE_TTL_SECONDS, show_spinner=False)
+def fetch_next_open_business_date(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+    after: date,
+) -> date | None:
+    """Return the cached nearest open prep date after a closeout date.
+
+    The cache is cleared whenever opening hours are saved, so the prep target
+    re-resolves the moment a day is marked open or closed.
+    """
+
+    return repository.fetch_next_open_business_date(
+        database_url, account_id, location_id, after
+    )
+
+
+@st.cache_data(ttl=READ_CACHE_TTL_SECONDS, show_spinner=False)
 def fetch_events_for_window(
     database_url: str,
     account_id: str,
@@ -803,6 +821,7 @@ _CACHED_READS: tuple[Callable[..., Any], ...] = (
     fetch_data_corrections,
     load_truth_demand,
     fetch_location_hours_plan,
+    fetch_next_open_business_date,
     fetch_events_for_window,
     fetch_recent_pos_import_runs,
     fetch_performance_payload,

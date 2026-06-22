@@ -24,6 +24,7 @@ from dialin.repository import (
 from dialin.streamlit_cache import (
     clear_cached_reads,
     fetch_closeout_payload,
+    fetch_next_open_business_date,
 )
 
 
@@ -48,7 +49,10 @@ def render(
     default_stockout_time = _default_stockout_time(flow["hours"].get("close_time"))
 
     latest_generated = payload["latest_date"]
-    target_date = business_date + timedelta(days=1)
+    next_open = fetch_next_open_business_date(
+        database_url, account_id, location_id, business_date
+    )
+    target_date = next_open or business_date + timedelta(days=1)
     if latest_generated is not None and business_date <= latest_generated:
         closeout_mode = "Replay"
     else:

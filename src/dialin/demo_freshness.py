@@ -12,7 +12,10 @@ import pandas as pd
 from dialin.db import account_connection, execute_many, fetch_one
 from dialin.generator import GeneratedDataset, generate_synthetic_dataset
 from dialin.loader import TABLE_COLUMNS, frame_to_rows
-from dialin.repository import generate_and_store_recommendations
+from dialin.repository import (
+    fetch_next_open_business_date,
+    generate_and_store_recommendations,
+)
 
 DEMO_SEED = 20260531
 DEMO_LOOKAHEAD_DAYS = 1
@@ -90,18 +93,45 @@ def observed_dates_to_append(latest_calendar_date: date, today: date) -> tuple[d
     return _inclusive_dates(latest_calendar_date + timedelta(days=1), today)
 
 
-def context_dates_to_ensure(latest_calendar_date: date, today: date) -> tuple[date, ...]:
-    """Return weather/event dates needed for current and next-day recommendations."""
+def context_dates_to_ensure(
+    latest_calendar_date: date,
+    today: date,
+    lookahead_end: date | None = None,
+) -> tuple[date, ...]:
+    """Return weather/event dates needed for current and next prep-day recommendations.
 
+    ``lookahead_end`` extends the horizon to the nearest open prep day so the
+    Today view's target always has forecast context, even across a closed day.
+    """
+
+    end = _lookahead_end_or_default(today, lookahead_end)
     start = latest_calendar_date + timedelta(days=1) if latest_calendar_date < today else today
-    return _inclusive_dates(start, today + timedelta(days=DEMO_LOOKAHEAD_DAYS))
+    return _inclusive_dates(start, end)
 
 
-def recommendation_refresh_dates(latest_calendar_date: date, today: date) -> tuple[date, ...]:
-    """Return recommendation dates to refresh after synthetic data is extended."""
+def recommendation_refresh_dates(
+    latest_calendar_date: date,
+    today: date,
+    lookahead_end: date | None = None,
+) -> tuple[date, ...]:
+    """Return recommendation dates to refresh after synthetic data is extended.
 
+    ``lookahead_end`` reaches the nearest open prep day so its recommendation is
+    stored even when the next calendar day is closed.
+    """
+
+    end = _lookahead_end_or_default(today, lookahead_end)
     start = latest_calendar_date if latest_calendar_date < today else today
-    return _inclusive_dates(start, today + timedelta(days=DEMO_LOOKAHEAD_DAYS))
+    return _inclusive_dates(start, end)
+
+
+def _lookahead_end_or_default(today: date, lookahead_end: date | None) -> date:
+    """Return the horizon end, never earlier than the fixed one-day lookahead."""
+
+    default_end = today + timedelta(days=DEMO_LOOKAHEAD_DAYS)
+    if lookahead_end is None:
+        return default_end
+    return max(default_end, lookahead_end)
 
 
 def ensure_demo_data_fresh(
@@ -120,15 +150,15 @@ def ensure_demo_data_fresh(
     if latest_calendar_date is None:
         return DemoFreshnessResult.empty()
 
+    lookahead_end = _resolve_lookahead_end(database_url, account_id, location_id, today)
     observed_dates = observed_dates_to_append(latest_calendar_date, today)
-    context_dates = context_dates_to_ensure(latest_calendar_date, today)
-    recommendation_dates = recommendation_refresh_dates(latest_calendar_date, today)
+    context_dates = context_dates_to_ensure(latest_calendar_date, today, lookahead_end)
+    recommendation_dates = recommendation_refresh_dates(
+        latest_calendar_date, today, lookahead_end
+    )
 
     if observed_dates or context_dates:
-        dataset = generate_synthetic_dataset(
-            seed=seed,
-            end_date=today + timedelta(days=DEMO_LOOKAHEAD_DAYS),
-        )
+        dataset = generate_synthetic_dataset(seed=seed, end_date=lookahead_end)
         _append_generated_rows(
             database_url=database_url,
             account_id=account_id,
@@ -155,6 +185,21 @@ def ensure_demo_data_fresh(
         recommendation_dates=recommendation_dates,
         recommendation_rows=recommendation_rows,
     )
+
+
+def _resolve_lookahead_end(
+    database_url: str,
+    account_id: str,
+    location_id: str,
+    today: date,
+) -> date:
+    """Return the horizon end covering at least the nearest open prep day after today."""
+
+    default_end = today + timedelta(days=DEMO_LOOKAHEAD_DAYS)
+    next_open = fetch_next_open_business_date(database_url, account_id, location_id, today)
+    if next_open is None:
+        return default_end
+    return max(default_end, next_open)
 
 
 def _append_generated_rows(
