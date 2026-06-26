@@ -34,6 +34,11 @@ TRAILING_BASELINE_WEEKS = 4
 CALIBRATION_TARGET_LOW = 0.75
 CALIBRATION_TARGET_HIGH = 0.85
 
+# Clean open days of evidence before the value comparison is a verdict rather
+# than early signal (PRD section 6.5; mirrors the >= 28 day gate in
+# ``model_gate_report``). Used to pace the onboarding readiness panel.
+EVIDENCE_TARGET_DAYS = 28
+
 
 def pinball_loss(actual: float, forecast: float, quantile: float) -> float:
     """Return the quantile (pinball) loss for one forecast at one quantile."""
@@ -440,6 +445,125 @@ def daily_operations_health(
         "adherence_rate": adhered_rows / attributed_rows if attributed_rows else None,
         "attributed_rows": attributed_rows,
     }
+
+
+def onboarding_readiness(
+    *,
+    economics_rows: list[dict[str, Any]],
+    health: dict[str, Any],
+    cost: dict[str, Any],
+    evidence_target_days: int = EVIDENCE_TARGET_DAYS,
+) -> dict[str, Any]:
+    """Synthesize a week-1 readiness signal toward a credible value verdict.
+
+    Pure synthesis of values the owner summary already computes
+    (``daily_operations_health`` and ``expected_misprep_cost``) plus the raw
+    economics rows, so it adds no database work. It exists so the pre-verdict
+    period — before the >= 28 clean open days the value gate needs (PRD section
+    6.5) — reads as visible progress instead of a blank scoreboard.
+
+    Distinct from the static, self-reported pilot setup checklist
+    (``repository.pilot``): every signal here is observed, not declared.
+    """
+
+    target = max(int(evidence_target_days), 1)
+    economics_confirmed = bool(economics_rows) and all(
+        str(row.get("values_source", "default")) != "default" for row in economics_rows
+    )
+    missing_closeout_rate = health.get("missing_closeout_rate")
+    open_days = int(health.get("open_days") or 0)
+    evidence_days = int(cost.get("dates") or 0)
+    attributed_rows = int(health.get("attributed_rows") or 0)
+    verdict_robust = cost.get("savings_robust") is True and cost.get("beats_baselines") is True
+
+    steps: list[dict[str, str]] = [
+        {
+            "key": "economics",
+            "label": "Confirm costs & prices",
+            "status": "done" if economics_confirmed else "todo",
+            "detail": (
+                "Costs and prices confirmed, so the euro estimate is grounded."
+                if economics_confirmed
+                else "The euro estimate is only as good as these — confirm them first."
+            ),
+        },
+        {
+            "key": "closeouts",
+            "label": "Record clean closeouts",
+            **_closeout_step(missing_closeout_rate, open_days),
+        },
+        {
+            "key": "evidence",
+            "label": f"Collect {target} clean open days",
+            "status": (
+                "done"
+                if evidence_days >= target
+                else "in_progress"
+                if evidence_days > 0
+                else "todo"
+            ),
+            "detail": f"{evidence_days} / {target} days matched to a closeout.",
+        },
+        {
+            "key": "adherence",
+            "label": "Use the recommendation",
+            "status": "done" if attributed_rows > 0 else "todo",
+            "detail": (
+                f"Followed or overridden on {attributed_rows} rows."
+                if attributed_rows > 0
+                else "Mark prep as followed or overridden at closeout."
+            ),
+        },
+        {
+            "key": "verdict",
+            "label": "Value verdict",
+            **_verdict_step(verdict_robust, evidence_days, target),
+        },
+    ]
+
+    if not economics_confirmed or open_days == 0:
+        stage, stage_label = "setup", "Setting up"
+    elif evidence_days < target:
+        stage, stage_label = "collecting", "Collecting evidence"
+    elif not verdict_robust:
+        stage, stage_label = "evaluating", "Evaluating the gain"
+    else:
+        stage, stage_label = "verdict_ready", "Verdict ready"
+
+    next_step = next((step for step in steps if step["status"] != "done"), None)
+    return {
+        "stage": stage,
+        "stage_label": stage_label,
+        "evidence_days": evidence_days,
+        "evidence_target_days": target,
+        "percent_to_verdict": round(100 * min(evidence_days, target) / target),
+        "steps": steps,
+        "next_step": next_step,
+    }
+
+
+def _closeout_step(missing_closeout_rate: Any, open_days: int) -> dict[str, str]:
+    """Return the status and detail for the clean-closeout readiness step."""
+
+    if missing_closeout_rate is None or open_days == 0:
+        return {"status": "todo", "detail": "No open days recorded yet."}
+    missing = float(missing_closeout_rate)
+    if missing <= 0.1:
+        return {"status": "done", "detail": f"{open_days} open days recorded clean."}
+    return {
+        "status": "in_progress",
+        "detail": f"{missing:.0%} of open days still missing a closeout.",
+    }
+
+
+def _verdict_step(verdict_robust: bool, evidence_days: int, target: int) -> dict[str, str]:
+    """Return the status and detail for the final value-verdict readiness step."""
+
+    if verdict_robust:
+        return {"status": "done", "detail": "Estimated gain clears its 95% interval."}
+    if evidence_days >= target:
+        return {"status": "in_progress", "detail": "Enough days — checking the gain clears noise."}
+    return {"status": "todo", "detail": "Unlocks once the steps above are in place."}
 
 
 def suspicious_operational_jumps(

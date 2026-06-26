@@ -24,6 +24,7 @@ from dialin.metrics import (
     evaluate_model_vs_baselines,
     expected_misprep_cost,
     model_gate_report,
+    onboarding_readiness,
     probe_diagnostics,
     suspicious_operational_jumps,
 )
@@ -94,6 +95,12 @@ def _render_owner_summary(payload: PerformancePayload) -> None:
     st.markdown("### Owner summary")
     title, body, tone = _owner_verdict(cost)
     getattr(st, tone)(f"**{title}**  \n{body}")
+
+    readiness = onboarding_readiness(
+        economics_rows=payload["economics"], health=health, cost=cost
+    )
+    if readiness["stage"] != "verdict_ready":
+        _render_readiness(readiness)
 
     st.markdown(
         ui.card_grid(
@@ -182,6 +189,48 @@ def _render_owner_summary(payload: PerformancePayload) -> None:
             "- Sold-out rows are excluded from the euro comparison because true demand is hidden.\n"
             "- Treat fewer than 28 open days as early evidence, not a business verdict."
         )
+
+
+_READINESS_GLYPHS = {"done": "✓", "in_progress": "→", "todo": "•"}
+_READINESS_STATUS_TEXT = {"done": "Done", "in_progress": "In progress", "todo": "To do"}
+
+
+def _render_readiness(readiness: dict[str, Any]) -> None:
+    """Render the pre-verdict onboarding progress panel for the first weeks.
+
+    Turns the "not enough evidence yet" period into visible momentum: a progress
+    bar toward the evidence threshold plus the observed leading-indicator steps.
+    """
+
+    percent = int(readiness["percent_to_verdict"])
+    days = int(readiness["evidence_days"])
+    target = int(readiness["evidence_target_days"])
+    st.markdown("#### Getting to a verdict")
+    st.caption(
+        "A credible euro verdict needs clean economics and enough clean open days. This is the "
+        "observed progress toward it — not a business result yet."
+    )
+    st.progress(
+        percent / 100,
+        text=f"{readiness['stage_label']} · {days} of {target} clean open days · {percent}%",
+    )
+    st.markdown(
+        ui.card_grid(
+            tuple(
+                ui.proof_card(
+                    step["label"],
+                    f"{_READINESS_GLYPHS.get(step['status'], '•')} "
+                    f"{_READINESS_STATUS_TEXT.get(step['status'], step['status'])}",
+                    step["detail"],
+                )
+                for step in readiness["steps"]
+            ),
+        ),
+        unsafe_allow_html=True,
+    )
+    next_step = readiness.get("next_step")
+    if next_step is not None:
+        st.info(f"**Next: {next_step['label']}**  \n{next_step['detail']}")
 
 
 def _owner_verdict(cost: dict[str, Any]) -> tuple[str, str, str]:

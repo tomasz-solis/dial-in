@@ -17,6 +17,7 @@ from dialin.metrics import (
     expected_misprep_cost,
     model_gate_report,
     naive_baseline_forecasts,
+    onboarding_readiness,
     pinball_loss,
     suspicious_operational_jumps,
 )
@@ -444,3 +445,101 @@ def test_model_gate_bias_uses_median_demand_not_buffered_prep() -> None:
     report = model_gate_report(matched, history, {"sweet": (3.2, 0.9)})
 
     assert report[0]["signed_error"] == pytest.approx(0.0)
+
+
+def _health(**overrides: object) -> dict[str, object]:
+    """Return a daily_operations_health-shaped dict with safe defaults."""
+
+    base: dict[str, object] = {
+        "open_days": 0,
+        "missing_closeout_rate": None,
+        "input_correction_rate": 0.0,
+        "pos_import_rejection_rate": 0.0,
+        "sellout_rate": None,
+        "adherence_rate": None,
+        "attributed_rows": 0,
+    }
+    return {**base, **overrides}
+
+
+def _cost(**overrides: object) -> dict[str, object]:
+    """Return an expected_misprep_cost-shaped dict with safe defaults."""
+
+    base: dict[str, object] = {"dates": 0, "savings_robust": None, "beats_baselines": None}
+    return {**base, **overrides}
+
+
+def test_onboarding_readiness_brand_new_tenant_is_setup() -> None:
+    """With no data and default economics, readiness should sit at the setup stage."""
+
+    readiness = onboarding_readiness(
+        economics_rows=[{"category": "sweet", "values_source": "default"}],
+        health=_health(),
+        cost=_cost(),
+    )
+
+    assert readiness["stage"] == "setup"
+    assert readiness["percent_to_verdict"] == 0
+    assert readiness["next_step"]["key"] == "economics"
+    evidence = next(step for step in readiness["steps"] if step["key"] == "evidence")
+    assert evidence["status"] == "todo"
+
+
+def test_onboarding_readiness_collecting_midway() -> None:
+    """Confirmed economics with half the evidence days should read as collecting."""
+
+    readiness = onboarding_readiness(
+        economics_rows=[{"category": "sweet", "values_source": "owner_confirmed"}],
+        health=_health(open_days=20, missing_closeout_rate=0.0, attributed_rows=30),
+        cost=_cost(dates=14, savings_robust=False, beats_baselines=True),
+    )
+
+    assert readiness["stage"] == "collecting"
+    assert readiness["percent_to_verdict"] == 50
+    evidence = next(step for step in readiness["steps"] if step["key"] == "evidence")
+    assert evidence["status"] == "in_progress"
+
+
+def test_onboarding_readiness_blocks_on_default_economics() -> None:
+    """Default economics must block the verdict even when plenty of days exist."""
+
+    readiness = onboarding_readiness(
+        economics_rows=[{"category": "sweet", "values_source": "default"}],
+        health=_health(open_days=40, missing_closeout_rate=0.0, attributed_rows=50),
+        cost=_cost(dates=40, savings_robust=True, beats_baselines=True),
+    )
+
+    assert readiness["stage"] == "setup"
+    assert readiness["next_step"]["key"] == "economics"
+    economics = next(step for step in readiness["steps"] if step["key"] == "economics")
+    assert economics["status"] == "todo"
+
+
+def test_onboarding_readiness_evaluating_when_days_met_but_not_robust() -> None:
+    """Enough days with an inconclusive gain should read as evaluating, not verdict-ready."""
+
+    readiness = onboarding_readiness(
+        economics_rows=[{"category": "sweet", "values_source": "owner_confirmed"}],
+        health=_health(open_days=40, missing_closeout_rate=0.0, attributed_rows=50),
+        cost=_cost(dates=30, savings_robust=False, beats_baselines=False),
+    )
+
+    assert readiness["stage"] == "evaluating"
+    assert readiness["percent_to_verdict"] == 100
+    verdict = next(step for step in readiness["steps"] if step["key"] == "verdict")
+    assert verdict["status"] != "done"
+
+
+def test_onboarding_readiness_verdict_ready_when_gain_is_robust() -> None:
+    """A robust positive gain over enough days should mark every step done."""
+
+    readiness = onboarding_readiness(
+        economics_rows=[{"category": "sweet", "values_source": "owner_confirmed"}],
+        health=_health(open_days=40, missing_closeout_rate=0.0, attributed_rows=50),
+        cost=_cost(dates=30, savings_robust=True, beats_baselines=True),
+    )
+
+    assert readiness["stage"] == "verdict_ready"
+    assert readiness["next_step"] is None
+    verdict = next(step for step in readiness["steps"] if step["key"] == "verdict")
+    assert verdict["status"] == "done"
