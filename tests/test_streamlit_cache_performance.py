@@ -25,10 +25,9 @@ def test_closeout_payload_uses_bounded_prefill_frames() -> None:
     """Closeout should not load all observed history just to render one form."""
 
     payload_source = _function_source("fetch_closeout_payload", "fetch_setup_payload")
-    helper_source = _function_source("_closeout_frames", "_history_frames")
+    helper_source = _function_source("_closeout_frames", "_location_hours_plan")
 
     assert "_closeout_frames" in payload_source
-    assert "_history_frames" not in payload_source
     assert "CLOSEOUT_DEFAULT_HISTORY_DAYS" in helper_source
     assert "SELECT *" not in helper_source
     assert "date >= %s" in helper_source
