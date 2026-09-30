@@ -57,7 +57,7 @@ def test_fit_recovers_weather_response_and_emits_only_parameters() -> None:
     assert layer.rain_elasticity < 0
     assert layer.weather_multiplier(28.0, 0.0) > layer.weather_multiplier(10.0, 0.0)
     assert layer.weather_multiplier(18.0, 12.0) < layer.weather_multiplier(18.0, 0.0)
-    # The emitted artifact is parameters only — no city/level/raw rows.
+    # The emitted artifact is parameters only: no city/level/raw rows.
     params = layer.as_parameters()
     assert set(params) == {
         "temp_elasticity",

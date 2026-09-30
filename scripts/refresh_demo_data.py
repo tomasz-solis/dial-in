@@ -2,7 +2,7 @@
 
 The deployed Streamlit app keeps startup fast by not refreshing demo data on
 load by default.
-Run this script to *pre-warm* that work — e.g. on a schedule — so the first
+Run this script to *pre-warm* that work (e.g. on a schedule) so the first
 visitor sees current data without waiting, or so the demo is current even if
 nobody has opened it for a while.
 
@@ -63,7 +63,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     rows = refresh_demo_data(args.today)
-    print(f"done — {rows} recommendation rows refreshed")
+    print(f"done: {rows} recommendation rows refreshed")
 
 
 if __name__ == "__main__":

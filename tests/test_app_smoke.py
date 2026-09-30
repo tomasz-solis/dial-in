@@ -280,7 +280,7 @@ def test_reason_sentence_names_weather_event_and_direction() -> None:
 
     sentence = today._reason_sentence(rows, context, date(2026, 6, 13))
 
-    assert sentence == "Sunny saturday plus Weekly market — expect a busier day than usual."
+    assert sentence == "Sunny saturday plus Weekly market: expect a busier day than usual."
 
 
 def test_reason_sentence_stays_neutral_without_drivers() -> None:
@@ -292,7 +292,7 @@ def test_reason_sentence_stays_neutral_without_drivers() -> None:
         date(2026, 6, 11),
     )
 
-    assert sentence == "A normal Thursday — demand should be close to a typical Thursday."
+    assert sentence == "A normal Thursday: demand should be close to a typical Thursday."
 
 
 def test_today_operator_cards_prioritize_action_watch_and_trust() -> None:

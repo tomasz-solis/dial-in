@@ -1,477 +1,258 @@
-# Dial In Phased Build Plan
+# Dial In phased build plan
 
-This plan turns the PRD, synthetic demo design, and current scaffold into a sequence of
-standalone build phases. Each phase should leave the app runnable, testable, and safe to push
-to GitHub.
+Turns the PRD, the synthetic demo design and the current scaffold into standalone build phases. Each phase leaves the app runnable, tested and safe to push to GitHub.
 
-The guiding constraint is simple: every phase must improve the demo or product truth without
-pretending we have data we do not have yet.
+The rule: every phase must make the demo or the product more truthful, without pretending to have data we don't have yet.
 
 ## Status (2026-06)
 
-Most of this plan is built; `docs/PRD.md` §23 is the authoritative snapshot. Phases 0 and 3–12 are
-essentially done — the stabilized scaffold and CI, the design system, the decision-explanation
-cards, the Fadri profile and realism checks, adherence/attribution, economics setup, honest
-measurement and model gates, opening hours with the daypart curve, CSV POS import, and pilot
-readiness. From Phase 14, real weather (Open-Meteo) and the shared environment-layer estimator are
-in. Phase 1 (local Docker/RLS) and Phases 2/13 (hosted Neon deploy) depend on your environment —
-CI proves RLS, but the hosted deploy is on the operator. Not started: production intraday claims
-(they need POS timestamps), staffing, ingredients, inventory, managed auth, and POS APIs.
+Most of the plan is built; `docs/PRD.md` §23 is the authoritative snapshot. Phases 0 and 3 to 12 are essentially done: stable scaffold and CI, design system, decision-explanation cards, Fadri profile and realism checks, adherence and attribution, economics setup, honest measurement and model gates, opening hours with the daypart curve, CSV POS import, and pilot readiness. From phase 14, real weather (Open-Meteo) and the shared environment-layer estimator are in. Phase 1 (local Docker and RLS) and phases 2 and 13 (hosted Neon deploy) depend on your environment: CI proves RLS, but the hosted deploy is up to the operator. Not started: production intraday claims (they need POS timestamps), staffing, ingredients, inventory, managed auth and POS APIs.
 
-## Phase 0 — Stabilize The Current Scaffold
+## Phase 0: stabilise the scaffold
 
-Goal: make the current local app boring to run.
+Goal: make the local app boring to run.
 
 Build:
-- Keep Python pinned to 3.12 through `.python-version` and `pyproject.toml`.
-- Keep `uv run ruff check`, `uv run mypy`, and `uv run pytest` green.
-- Add a smoke test for the Streamlit auth/session helper path where possible without launching a browser.
-- Confirm generated synthetic data still passes `validate_realism.py`.
-- Keep `docs/docker-startup-guide.md` as the hand-holding local runbook.
 
-Done when:
-- Fresh clone can run local tests without manual dependency installs.
-- Local synthetic data generation and validation work.
-- Known Streamlit auth version quirks are documented.
+- Keep Python pinned to 3.12 in `.python-version` and `pyproject.toml`.
+- Keep `uv run ruff check`, `uv run mypy` and `uv run pytest` green.
+- Add a smoke test for the Streamlit auth/session helper, without a browser where possible.
+- Check generated synthetic data still passes `validate_realism.py`.
+- Keep `docs/docker-startup-guide.md` as the step-by-step local runbook.
 
-Skeptical note:
-- Do not add features until the setup is repeatable. A demo that only works on one laptop is
-not a demo; it is state accidentally preserved on disk.
+Done when a fresh clone runs the tests without manual installs, local data generation and validation work, and known Streamlit auth version quirks are documented.
 
-## Phase 1 — Local Postgres And Docker Learning
+Caution: don't add features until setup is repeatable. A demo that only works on one laptop is state accidentally saved on disk.
 
-Goal: learn Docker while proving the database path locally before touching hosted data.
+## Phase 1: local Postgres and learning Docker
+
+Goal: learn Docker and prove the database path locally before touching hosted data.
 
 Build:
-- Start Docker Desktop.
-- Run `docker compose up -d postgres`.
+
+- Start Docker Desktop and run `docker compose up -d postgres`.
 - Apply migrations with the owner/admin URL.
 - Load observed synthetic data only.
-- Run manual RLS checks from the Docker guide and add automated DB-backed equivalents where possible.
-- Add a small DB-backed test suite that runs only when `TEST_DATABASE_URL` is present.
+- Run the manual RLS checks from the Docker guide and automate them where possible.
+- Add a small database-backed test suite that runs only when `TEST_DATABASE_URL` is set.
 
-Logic:
-- Owner/admin connection can migrate and seed.
-- App-role connection can read rows only when `app.current_account_id` is set.
-- Truth data must never enter Postgres.
+Logic: the owner/admin connection migrates and seeds; the app role reads rows only when `app.current_account_id` is set; truth data never enters Postgres.
 
-Done when:
-- Local Postgres can be reset from scratch.
-- Account A cannot read account B through app helpers or direct SQL.
-- Tests skip cleanly when Docker is unavailable.
+Done when local Postgres can be rebuilt from scratch, account A can't read account B through app helpers or direct SQL, and tests skip cleanly without Docker.
 
-Skeptical note:
-- Do not connect Streamlit Cloud or Neon until RLS is proven locally. Hosted convenience is
-not worth leaking tenant data.
+Caution: don't connect Streamlit Cloud or Neon until RLS is proven locally. Hosted convenience isn't worth leaking tenant data.
 
-## Phase 2 — Hosted Database Setup For Online Demo
+## Phase 2: hosted database for the online demo
 
-Goal: make the web app work online with Neon while keeping the code provider-neutral.
+Goal: run the web app on Neon while keeping the code provider-neutral.
 
 Build:
-- Create separate Neon roles:
-  - owner/admin role for migrations and seed jobs
-  - `dialin_app` role for Streamlit runtime
-- Apply the same migrations used locally.
+
+- Create separate Neon roles: owner/admin for migrations and seeding, `dialin_app` for the Streamlit runtime.
+- Apply the same migrations as locally.
 - Load observed synthetic data only.
-- Verify RLS on Neon with the app role.
-- Store runtime `DATABASE_URL` and auth secrets in Streamlit secrets.
-- Keep `MIGRATION_DATABASE_URL` out of Streamlit runtime.
+- Check RLS on Neon with the app role.
+- Put the runtime `DATABASE_URL` and auth secrets in Streamlit secrets, and keep `MIGRATION_DATABASE_URL` out of the runtime.
 
-Logic:
-- The hosted app uses the low-privilege role only.
-- Migration/seed scripts use admin credentials outside the app.
-- Neon is the demo provider, not the architecture.
+Logic: the hosted app uses the low-privilege role only, migration and seed scripts use admin credentials outside the app, and Neon is the demo provider, not the architecture.
 
-Done when:
-- Streamlit can run against Neon.
-- App refuses to start with the owner/admin connection.
-- RLS verification passes on Neon.
+Done when Streamlit runs against Neon, the app refuses to start with the owner/admin connection, and RLS checks pass on Neon.
 
-Skeptical note:
-- This is not production infrastructure. It is a hosted demo. Do not add production claims
-until backups, monitoring, access audit, and deployment controls exist.
+Caution: this is a hosted demo, not production infrastructure. No production claims until backups, monitoring, access audit and deployment controls exist.
 
-## Phase 3 — Visual Design System And UX Polish
+## Phase 3: visual design system and UX
 
-Goal: make the app feel like a serious SaaS tool without losing the small-cafe context.
+Goal: a serious SaaS feel without losing the small-café context.
 
-Direction:
-- Use Fadri as domain inspiration: warm, food-aware, specialty coffee, handmade baked goods.
-- Use a Revolut-like SaaS discipline: clean surfaces, clear hierarchy, restrained cards,
-fast scanning, confident numbers, low visual noise.
-- Do not copy either brand. Borrow the operating feel, not identity.
+Direction: take Fadri as domain inspiration (warm, food-aware, specialty coffee, handmade baked goods) and Revolut-style SaaS discipline (clean surfaces, clear hierarchy, restrained cards, fast scanning, confident numbers, little visual noise). Copy neither brand; borrow the operating feel, not the identity.
 
 Build:
-- Add design tokens:
-  - type scale
-  - spacing
-  - color palette
-  - card/table styles
-  - confidence/risk colors
-- Redesign the first screen around the actual workflow:
-  - target date
-  - sweet recommendation
-  - savory recommendation
-  - range
-  - confidence
-  - why
-  - action state
-- Add compact weather/event/season panels below the recommendation.
-- Keep the daily closeout form short and mobile-first.
-- Keep analytics below the decision, not above it.
 
-Done when:
-- The app looks credible on mobile and desktop.
-- Text does not overflow.
-- The first visible screen answers: "What should I prep tomorrow?"
-- The app still feels operational, not like a marketing landing page.
+- Design tokens: type scale, spacing, colour palette, card and table styles, confidence and risk colours.
+- A first screen built around the workflow: target date, sweet recommendation, savory recommendation, range, confidence, why, action state.
+- Compact weather, event and season panels below the recommendation.
+- A short, mobile-first daily closeout form.
+- Analytics below the decision, not above it.
 
-Skeptical note:
-- "Beautiful" is not enough. The design must reduce decision time. If a card does not help
-the owner decide prep, it belongs below the fold or not at all.
+Done when the app looks credible on mobile and desktop, text doesn't overflow, the first screen answers "what should I prep tomorrow?", and it still feels like an operating tool, not a landing page.
 
-## Phase 4 — Decision Explanation Surface
+Caution: good looks aren't enough. The design must cut decision time. A card that doesn't help the owner decide prep goes below the fold or goes.
 
-Goal: show enough context that the recommendation feels inspectable, not magical.
+## Phase 4: decision explanation
+
+Goal: enough context that the recommendation feels inspectable, not magical.
 
 Build:
-- Weather card:
-  - target forecast
-  - rain/temp/condition
-  - forecast made at
-  - fallback state when missing
-- Event card:
-  - event name
-  - event type
-  - impact score
-  - source
-  - confidence
-- Season card:
-  - low/mid/high season
-  - named holiday/tourism period when relevant
-- Driver explanation:
-  - weekday effect
-  - weather effect
-  - event effect
-  - attach-rate/sellout correction
 
-Logic:
-- The engine already uses weather/events in a basic way.
-- The UI should expose those same inputs.
-- The explanation should show direction and rough lift, not hidden math.
+| Card | Shows |
+|---|---|
+| Weather | Target forecast, rain, temperature, condition, when the forecast was made, fallback state when missing |
+| Event | Name, type, impact score, source, confidence |
+| Season | Low, mid or high season, and any named holiday or tourism period |
+| Drivers | Weekday effect, weather effect, event effect, attach-rate and sellout correction |
 
-Done when:
-- A user can see why a recommendation moved up or down.
-- Missing weather lowers confidence and says why.
-- Event impact is labelled as estimated, not fact.
+Logic: the engine already uses weather and events in a basic way, and the UI should show those same inputs, with direction and rough lift instead of hidden maths.
 
-Skeptical note:
-- Explanations can become storytelling. Keep them tied to actual input values and stored
-driver multipliers.
+Done when a user can see why a recommendation moved, missing weather lowers confidence and says why, and event impact is labelled as an estimate.
 
-## Phase 5 — Product-Fit Scenario And Synthetic Realism
+Caution: explanations can turn into storytelling. Keep them tied to actual input values and saved driver multipliers.
 
-Goal: make the synthetic demo match the real wedge: mixed-focus specialty coffee plus baked goods.
+## Phase 5: product-fit scenario and synthetic realism
+
+Goal: make the demo match the real target, a mixed-focus specialty coffee place with baked goods.
 
 Build:
-- Tune the Fadri-style profile around:
-  - specialty coffee core
-  - sweet and salty vegan baked goods
-  - weekend demand spikes
-  - 09:00-13:00 opening window
-  - food sometimes selling out around 11:30
-  - waste aversion from in-house baking
-- Keep the dummy cafe as a contrasting profile.
-- Add realism metrics:
-  - weekend sellout rate
-  - average sellout time when available
-  - waste share
-  - observed attach rate
-  - drink/food basket sensitivity
 
-Logic:
-- This product is weak for coffee-only shops with incidental cookies.
-- It is stronger where fresh food is meaningful and sellouts happen before close.
+- Tune the Fadri-style profile: specialty coffee core; sweet and salty vegan baked goods; weekend spikes; a 09:00 to 13:00 opening window; food sometimes selling out around 11:30; waste aversion from baking in house.
+- Keep the dummy café as a contrasting profile.
+- Add realism metrics: weekend sellout rate, average sellout time when available, waste share, observed attach rate, drink and food basket sensitivity.
 
-Done when:
-- The synthetic data looks like the target use case.
-- The app labels Fadri as fictionalized unless real operating bands are supplied.
-- Validation fails if the synthetic profile becomes too flattering.
+Logic: the product is weak for coffee-only shops with a few cookies, and stronger where fresh food matters and sellouts happen before closing.
 
-Skeptical note:
-- Do not rig the baseline. A persuasive demo should show some days where Dial In loses.
+Done when the synthetic data looks like the target use case, Fadri is labelled fictionalised unless real operating bands exist, and validation fails if the profile gets too flattering.
 
-## Phase 6 — Adherence, Overrides, And Attribution Basics
+Caution: don't rig the baseline. A persuasive demo shows some days where Dial In loses.
 
-Goal: complete the attribution backbone before any pilot, ROI, or model-quality claim.
+## Phase 6: adherence, overrides and attribution
+
+Goal: the attribution backbone, before any pilot, ROI or model-quality claim.
 
 Build:
-- After closeout, populate recommendation fields:
-  - `prepared`
-  - `adhered`
-  - `override_delta`
-- Add optional override reason:
-  - weather felt wrong
-  - supplier issue
-  - large order
-  - owner judgement
-  - other
-- Show adherence in the scorecard.
-- Separate days followed vs days overridden.
 
-Logic:
-- Without adherence, we cannot tell whether outcomes came from Dial In or from the owner
-ignoring the recommendation.
-- Overrides are not failure. They are evidence about what the model missed.
-- This is not optional polish. The PRD's measurement claims depend on these fields existing.
+- After closeout, fill the recommendation's `prepared`, `adhered` and `override_delta`.
+- An optional override reason: weather felt wrong, supplier issue, large order, owner judgement, other.
+- Adherence in the scorecard, with followed and overridden days split.
 
-Done when:
-- Recommendation rows reflect actual closeout prep.
-- Scorecard can split adhered and non-adhered days.
-- Override reasons are optional and one tap.
-- No scorecard or pilot report implies attribution before this phase is done.
+Logic: without adherence, you can't tell whether an outcome came from Dial In or from the owner ignoring it. Overrides aren't failures; they show what the model missed. The PRD's measurement claims depend on these fields, so this isn't optional.
 
-Skeptical note:
-- Do not over-interpret adherence. An owner may override for reasons the app could not know.
+Done when recommendation rows reflect actual prep, the scorecard splits adhered and non-adhered days, override reasons are optional and one tap, and no scorecard or pilot report implies attribution before this phase.
 
-## Phase 7 — Economics Setup And Waste-Vs-Runout Control
+Caution: don't over-read adherence. An owner may override for reasons the app couldn't know.
 
-Goal: make the decision layer configurable instead of relying on hidden defaults.
+## Phase 7: economics setup and the waste vs run-out control
+
+Goal: a configurable decision layer instead of hidden defaults.
 
 Build:
-- Add an economics setup view:
-  - retail price
-  - unit COGS
-  - salvage share
-  - attached-drink margin
-  - attach-and-balk rate
-- Add a simple "waste vs run-out" control that maps to service quantile.
-- Mark values as:
-  - default
-  - owner-confirmed
-  - corrected
-- Lower confidence or show a warning when economics are defaults.
 
-Logic:
-- The recommendation is a newsvendor decision.
-- Bad economics create precise-looking but wrong prep advice.
-- The attached-drink effect is a hypothesis until validated.
+- An economics view: retail price, unit COGS, salvage share, attached-drink margin, attach-and-balk rate.
+- A simple "waste vs run-out" control that maps to the service quantile.
+- Each value marked default, owner-confirmed or corrected.
+- Lower confidence, or a warning, when economics are defaults.
 
-Done when:
-- `category_economics` can be edited safely.
-- Historical recommendations keep their copied service quantile.
-- The UI explains the tradeoff without showing formulas by default.
+Logic: the recommendation is a newsvendor decision, and bad economics give precise-looking but wrong advice. The attached-drink effect is a hypothesis until validated.
 
-Skeptical note:
-- Do not ask owners for more numbers than they can realistically provide. Defaults are fine,
-but they must be labelled.
+Done when `category_economics` can be edited safely, past recommendations keep their copied service quantile, and the UI explains the tradeoff without showing formulas by default.
 
-## Phase 8 — Honest Measurement And Baselines
+Caution: don't ask owners for more numbers than they can give. Defaults are fine if labelled.
 
-Goal: improve the scorecard from rough proxy to credible synthetic measurement.
+## Phase 8: honest measurement and baselines
+
+Goal: move the scorecard from rough proxy to credible synthetic measurement.
 
 Build:
-- Add naive baselines:
-  - last-week same weekday
-  - trailing 4-week same weekday average
-- Add metrics:
-  - pinball loss
-  - calibration
-  - mean signed error
-  - censoring rate
-  - waste proxy
-  - sellout frequency
-  - combined expected cost
-- Show synthetic caveats clearly.
-- Add losing days to the scorecard.
 
-Logic:
-- The app optimizes expected cost, not raw forecast accuracy.
-- Waste and stockout move along one curve; do not claim independent guaranteed reductions.
+- Naive baselines: last week's same weekday, and the trailing 4-week same-weekday average.
+- Metrics: pinball loss, calibration, mean signed error, censoring rate, waste proxy, sellout frequency, combined expected cost.
+- Clear synthetic caveats, and losing days in the scorecard.
 
-Done when:
-- Dial In can be compared to naive baselines on synthetic observed data.
-- The scorecard never says validated ROI.
-- Revenue/savings are labelled as estimates with assumptions.
-- Calibration and confidence intervals are shown as diagnostics until there are enough held-out open days to support them.
+Logic: the app optimises expected cost, not raw forecast accuracy. Waste and stockouts move along one curve, so don't claim independent guaranteed cuts in both.
 
-Skeptical note:
-- "Revenue generated" is dangerous phrasing. Prefer "estimated missed margin recovered" or
-"combined expected cost reduction," with uncertainty.
+Done when Dial In can be compared with naive baselines on synthetic observed data, the scorecard never says validated ROI, revenue and savings are labelled estimates with assumptions, and calibration and intervals are shown as diagnostics until there are enough held-out open days.
 
-## Phase 9 — Data Quality Workflows
+Caution: "revenue generated" is dangerous. Prefer "estimated missed margin recovered" or "combined expected cost reduction", with uncertainty.
+
+## Phase 9: data-quality workflows
 
 Goal: keep bad operational data from poisoning the model.
 
-Build:
-- Closed day action.
-- Late correction flow.
-- Bad input repair for `sold > prepared`.
-- Data correction audit display.
-- Menu-version change marker.
-- Basic missing-input handling.
+Build: a closed-day action, a late-correction flow, repair for `sold > prepared`, a data-correction audit view, a menu-version change marker, and basic missing-input handling.
 
-Logic:
-- Fresh-prep forecasting is only as good as the closeout data.
-- Missing input should not become zero demand.
-- Regime changes should not be blended into old history blindly.
+Logic: fresh-prep forecasts are only as good as the closeout data. Missing input must not become zero demand, and regime changes shouldn't be blended blindly into old history.
 
-Done when:
-- Corrections append to `data_corrections`.
-- Closed days do not produce category demand rows.
-- Menu changes can be marked and explained.
+Done when corrections append to `data_corrections`, closed days produce no category demand rows, and menu changes can be marked and explained.
 
-Skeptical note:
-- A model bug and a data-entry bug can look identical. The app needs a way to inspect inputs.
+Caution: a model bug and a data-entry bug can look the same, so the app needs a way to inspect inputs.
 
-## Phase 10 — Opening Hours And Synthetic Intraday Demo
+## Phase 10: opening hours and a synthetic intraday demo
 
-Goal: keep intraday thinking visible while avoiding fake production claims.
+Goal: keep intraday thinking visible without fake production claims.
 
 Build:
-- Add versioned `location_hours`.
-- Add synthetic daypart curve artifacts.
-- Show a demo-only chart:
-  - opening hours
-  - expected drink pressure by daypart
-  - food sellout time when `time_last_sale` exists
-- Compare sellout time to close time.
 
-Logic:
-- For the target scenario, "sold out at 11:30 while open until 13:00" is important.
-- Production intraday claims require timestamped POS data.
-- Until then, the demand curve is illustrative.
+- Versioned `location_hours`.
+- Synthetic daypart curve artifacts.
+- A demo-only chart: opening hours, expected drink pressure by daypart, and food sellout time when `time_last_sale` exists.
+- Sellout time compared with closing time.
 
-Done when:
-- Synthetic demo can show the missed late-service window.
-- UI clearly says synthetic/illustrative where appropriate.
-- Daily recommendation remains the main screen.
+Logic: for the target scenario, "sold out at 11:30 while open until 13:00" matters. Production intraday claims need timestamped POS data; until then the demand curve is illustrative.
 
-Skeptical note:
-- This feature can easily become fake precision. Keep it demo-labelled until POS timestamps
-exist.
+Done when the demo can show the missed late-service window, the UI says synthetic or illustrative where it should, and the daily recommendation stays the main screen.
 
-## Phase 11 — CSV POS Backfill Before API Integration
+Caution: this can easily become fake precision. Keep it labelled as demo until POS timestamps exist.
 
-Goal: get closer to real data without overbuilding integrations.
+## Phase 11: CSV POS backfill before API integration
+
+Goal: get closer to real data without over-building integrations.
 
 Build:
+
 - CSV import for historical POS exports.
-- Map POS rows to:
-  - drinks
-  - sweet
-  - savory
-  - date
-  - optional timestamp
-- Validate imported counts.
-- Store import summary:
-  - rows read
-  - rows rejected
-  - mapped categories
-  - timestamp coverage
+- Mapping POS rows to drinks, sweet, savory, date and an optional timestamp.
+- Validation of imported counts.
+- An import summary: rows read, rows rejected, mapped categories, timestamp coverage.
 
-Logic:
-- CSV backfill is cheaper and faster than POS API work.
-- Timestamp coverage decides whether intraday features are allowed.
+Logic: CSV backfill is cheaper and faster than POS API work, and timestamp coverage decides whether intraday features are allowed.
 
-Done when:
-- A pilot cafe can import historical POS exports.
-- Import errors are visible and fixable.
-- No API credentials are needed yet.
+Done when a pilot café can import historical POS exports, import errors are visible and fixable, and no API credentials are needed yet.
 
-Skeptical note:
-- POS exports are messy. Build mapping and validation before promising automation.
+Caution: POS exports are messy. Build mapping and validation before promising automation.
 
-## Phase 12 — Real Pilot Readiness
+## Phase 12: real pilot readiness
 
-Goal: prepare the product for friend/pilot usage without overstating it.
+Goal: ready for a friend or pilot café without overstating anything.
 
 Build:
-- Pilot setup checklist:
-  - open days
-  - operating hours
-  - rough food revenue share
-  - weekend sellout frequency
-  - typical sellout time
-  - waste handling
-  - category economics
-  - POS export availability
+
+- A pilot setup checklist: open days, operating hours, rough food revenue share, weekend sellout frequency, typical sellout time, waste handling, category economics, POS export availability.
 - Shadow mode.
-- Baseline/live window tracking.
-- Exportable pilot report.
+- Baseline and live window tracking.
+- An exportable pilot report.
 - Manual event confirmation.
 
-Logic:
-- The pilot should test both model quality and business value.
-- If value is too small, that is a product-fit result, not a failure to sell harder.
+Logic: the pilot tests both model quality and business value. If the value is too small, that's a product-fit result, not a reason to sell harder.
 
-Done when:
-- A real cafe can run a short shadow period.
-- The app can report what was observed, estimated, and assumed.
-- No real-data pilot runs without RLS and backups.
+Done when a real café can run a short shadow period, the app reports what was observed, estimated and assumed, and no real-data pilot runs without RLS and backups.
 
-Skeptical note:
-- Friend pilots are useful but biased. Treat feedback seriously, but do not generalize too
-quickly.
+Caution: friend pilots are useful but biased. Take the feedback seriously, but don't generalise from it too fast.
 
-## Phase 13 — Hosted Demo Polish And Release Hygiene
+## Phase 13: hosted demo polish and release hygiene
 
-Goal: make the online demo easy to share without embarrassing operational gaps.
+Goal: an online demo that's easy to share without embarrassing gaps.
 
-Build:
-- Streamlit Cloud deployment against Neon.
-- README online demo instructions.
-- Secrets checklist.
-- Basic CI:
-  - ruff
-  - mypy
-  - pytest
-- Seed/reset scripts for hosted demo data.
-- Simple error page for missing DB/secrets.
+Build: Streamlit Cloud deployment on Neon, online demo instructions in the README, a secrets checklist, basic CI (ruff, mypy, pytest), seed and reset scripts for hosted demo data, and a simple error page for a missing database or secrets.
 
-Logic:
-- A shareable demo needs repeatable deployment.
-- CI protects against breaking the scaffold as features are added.
+Logic: a shareable demo needs repeatable deployment, and CI protects the scaffold as features land.
 
-Done when:
-- Fresh push passes CI.
-- Hosted demo can be reseeded.
-- No secrets are committed.
+Done when a fresh push passes CI, the hosted demo can be reseeded, and no secrets are committed.
 
-Skeptical note:
-- Do not confuse "deployed" with "production-ready."
+Caution: deployed isn't production-ready.
 
-## Phase 14 — Later Product Expansion
+## Phase 14: later expansion
 
-Goal: keep future ideas visible without letting them distract the first wedge.
+Goal: keep future ideas visible without distracting from the first use case.
 
-Candidates:
-- Real weather API integration.
-- Event-source integrations where coverage is proven.
-- Managed auth.
-- API POS integrations.
-- SKU-level prep.
-- Ingredients and recipe mapping.
-- Staffing suggestions.
-- Inventory ordering.
-- Multi-location benchmarking within one account.
-- Shared environment-response model across consenting accounts.
+Candidates: real weather API, event-source integrations where coverage is proven, managed auth, POS API integrations, SKU-level prep, ingredients and recipe mapping, staffing suggestions, inventory ordering, multi-location benchmarks within one account, and a shared environment-response model across consenting accounts.
 
-Logic:
-- These are plausible, but the first proof is still daily baked-goods prep for mixed-focus
-specialty coffee places.
+Logic: all plausible, but the first proof is still daily baked-goods prep for mixed-focus specialty coffee places.
 
-Done when:
-- Earlier phases prove setup, model gates, and business value.
+Done when earlier phases prove setup, model gates and business value.
 
-Skeptical note:
-- The product can die from breadth. Do not build inventory, staffing, or benchmarking until
-the prep decision is clearly useful.
+Caution: the product can die from breadth. No inventory, staffing or benchmarking until the prep decision is clearly useful.
 
-## Always-On Gates
+## Gates for every phase
 
-Every phase should end with:
+Every phase ends with:
 
 ```bash
 uv run ruff check
@@ -486,21 +267,15 @@ uv run python scripts/generate_synthetic_data.py --seed 20260531 --output data/g
 uv run python scripts/validate_realism.py data/generated
 ```
 
-When database behavior changes:
+When database behaviour changes:
 
 ```bash
 uv run python scripts/migrate.py --target local
 uv run python scripts/load_observed_data.py --observed-dir data/generated/observed --mode truncate-load
 ```
 
-Before hosted work:
-- prove RLS locally
-- use app role at runtime
-- use owner/admin role only for migration/seed
-- do not load truth data
+Before hosted work: prove RLS locally, use the app role at runtime, use the owner/admin role only for migration and seeding, and never load truth data.
 
-## Suggested Immediate Next Phase
+## Suggested next phase
 
-Start with Phase 1 if Docker/RLS has not been fully proven on your machine. If that is already
-done, move to Phase 4 and Phase 6 before broader polish: explanation plus attribution gives the
-demo a cleaner truth contract. Then do Phase 3 visual polish around that workflow.
+Start with phase 1 if Docker and RLS aren't proven on your machine yet. If they are, do phases 4 and 6 before more polish: explanation plus attribution gives the demo a cleaner truth contract. Then phase 3 visual polish around that workflow.

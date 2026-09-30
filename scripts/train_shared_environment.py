@@ -6,7 +6,7 @@ view (aggregates only, opted-in accounts only), fits generic weather
 elasticities, and emits **parameters only** as JSON. It never reads or prints a
 tenant's raw rows, counts, or name.
 
-On a sparse pool — like the two-account synthetic demo — it refuses to fit and
+On a sparse pool (like the two-account synthetic demo) it refuses to fit and
 says so, which is the honest outcome: the demo has not trained a real shared
 layer (Architecture "Known Limits").
 

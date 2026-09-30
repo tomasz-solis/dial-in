@@ -117,7 +117,7 @@ def _render_demand_flow(
         key=key,
         stockout_windows=_stockout_windows(sellouts, close_time),
     )
-    st.caption("Synthetic daypart shape from daily history — not live POS intraday data.")
+    st.caption("Synthetic daypart shape from daily history, not live POS intraday data.")
     _render_sellout_snapshot(sellout_rows)
 
 

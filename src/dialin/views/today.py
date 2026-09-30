@@ -125,8 +125,8 @@ def _watch_item(rows: list[dict[str, Any]], context: dict[str, Any]) -> tuple[st
         extra = int(row.get("probe_extra_units", 0))
         return (
             "Learning your ceiling",
-            f"{str(row['category']).title()} prep is +{extra} on purpose — "
-            "note if it still sells out.",
+            f"{str(row['category']).title()} prep is +{extra} on purpose. "
+            "Note if it still sells out.",
         )
     risk_rows = [
         row
@@ -202,7 +202,7 @@ def _reason_sentence(
         outlook = "expect a quieter day than usual"
     else:
         outlook = f"demand should be close to a typical {day}"
-    return f"{subject} — {outlook}."
+    return f"{subject}: {outlook}."
 
 
 def _external_lift(rows: list[dict[str, Any]]) -> float:
@@ -227,7 +227,7 @@ def _render_why_details(rows: list[dict[str, Any]]) -> None:
 
     for row in rows:
         st.markdown(
-            f"**{str(row['category']).title()}** — likely sells "
+            f"**{str(row['category']).title()}**: likely sells "
             f"{int(row['demand_p_lower'])}-{int(row['demand_p_upper'])} "
             f"(median {int(row['demand_p50'])}) · prep set at the "
             f"{format_percent(float(row['service_quantile']))} service level "

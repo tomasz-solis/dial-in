@@ -2,7 +2,7 @@
 
 The serving path is strictly per-tenant (RLS). The training path is the one place
 the PRD allows cross-account data, and only as anonymised aggregates in, model
-parameters out — never raw rows. Postgres enforces this: the
+parameters out, never raw rows. Postgres enforces this: the
 ``shared_layer_features`` view aggregates open days by city/country/date across
 opted-in accounts (``contributes_to_shared_layer``) and is readable only by the
 platform-admin role.
@@ -44,7 +44,7 @@ class InsufficientPoolError(RuntimeError):
 
 @dataclass(frozen=True)
 class EnvironmentLayer:
-    """Fitted, anonymised weather elasticities — parameters only, no raw rows."""
+    """Fitted, anonymised weather elasticities: parameters only, no raw rows."""
 
     temp_elasticity: float
     rain_elasticity: float
@@ -162,8 +162,8 @@ def cold_start_prior(
 ) -> ColdStartPrior:
     """Return a wide, Low-confidence baseline for a no-history café (opt-in only).
 
-    The baseline is a pooled *level* — the one place the PRD permits cross-account
-    level pooling — so it is gated on ``opt_in`` and on the segment having enough
+    The baseline is a pooled *level* (the one place the PRD permits cross-account
+    level pooling), so it is gated on ``opt_in`` and on the segment having enough
     pooled location-days. The range is deliberately wide and confidence Low; it
     decays to nothing as the café's own data arrives.
     """

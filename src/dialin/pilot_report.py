@@ -49,7 +49,7 @@ def build_pilot_report_markdown(
     """Return a Markdown pilot report bundling windows, gates, and outcomes."""
 
     lines: list[str] = []
-    lines.append(f"# Dial In pilot report — {account_label}")
+    lines.append(f"# Dial In pilot report: {account_label}")
     lines.append("")
     lines.append(f"- Location: {location_label}")
     lines.append(f"- Generated: {generated_on.isoformat()}")
@@ -141,7 +141,7 @@ def _profile_section(profile: dict[str, Any] | None) -> list[str]:
     lines.append(f"Source: **{source}**")
     lines.append("")
     for field in PILOT_CHECKLIST_FIELDS:
-        value = responses.get(field["key"], "—")
+        value = responses.get(field["key"], "not answered")
         lines.append(f"- {field['label']}: {value}")
     lines.append("")
     return lines
@@ -155,7 +155,7 @@ def _caveats_section() -> list[str]:
         "",
         "- **Observed:** sold and prepared counts, sellout days, adherence.",
         "- **Estimated:** de-censored demand on sold-out days, expected mis-prep cost, "
-        "calibration — all with uncertainty.",
+        "calibration, all with uncertainty.",
         "- **Assumed:** any category economics still on defaults, plus unconfirmed events.",
         "- **Not claimed:** validated ROI. A pilot this short cannot prove savings; it can "
         "only show whether the workflow and direction look credible (PRD section 6.5).",

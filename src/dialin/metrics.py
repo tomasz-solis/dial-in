@@ -4,12 +4,12 @@ and expected mis-prep cost.
 These implement the PRD section 6.1/6.2 evaluation contract. Two evaluation
 lenses are provided on purpose:
 
-* **Observed (production) lens** — scores against censored ``sold`` on uncensored
+* **Observed (production) lens**: scores against censored ``sold`` on uncensored
   days only, because on sold-out days true demand is unknown. Pinball loss on a
   censored sample is biased toward low point forecasts, so the honest headline
   for the observed lens is **expected mis-prep cost** (a decision-vs-decision
   money comparison), not pinball.
-* **Ground-truth (demo) lens** — only possible with synthetic data, scores
+* **Ground-truth (demo) lens**: only possible with synthetic data, scores
   against ``true_demand`` on every day. This removes the censoring bias and
   shows the model's real skill.
 
@@ -459,8 +459,8 @@ def onboarding_readiness(
     Pure synthesis of values the owner summary already computes
     (``daily_operations_health`` and ``expected_misprep_cost``) plus the raw
     economics rows, so it adds no database work. It exists so the pre-verdict
-    period — before the >= 28 clean open days the value gate needs (PRD section
-    6.5) — reads as visible progress instead of a blank scoreboard.
+    period (before the >= 28 clean open days the value gate needs, PRD section
+    6.5) reads as visible progress instead of a blank scoreboard.
 
     Distinct from the static, self-reported pilot setup checklist
     (``repository.pilot``): every signal here is observed, not declared.
@@ -484,7 +484,7 @@ def onboarding_readiness(
             "detail": (
                 "Costs and prices confirmed, so the euro estimate is grounded."
                 if economics_confirmed
-                else "The euro estimate is only as good as these — confirm them first."
+                else "The euro estimate is only as good as these. Confirm them first."
             ),
         },
         {
@@ -562,7 +562,10 @@ def _verdict_step(verdict_robust: bool, evidence_days: int, target: int) -> dict
     if verdict_robust:
         return {"status": "done", "detail": "Estimated gain clears its 95% interval."}
     if evidence_days >= target:
-        return {"status": "in_progress", "detail": "Enough days — checking the gain clears noise."}
+        return {
+            "status": "in_progress",
+            "detail": "Enough days. Checking whether the gain clears the noise.",
+        }
     return {"status": "todo", "detail": "Unlocks once the steps above are in place."}
 
 

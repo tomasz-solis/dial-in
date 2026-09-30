@@ -5,17 +5,17 @@ with a real forecast + historical-actuals provider, "with forecast age and
 fallback state shown" and "a seasonal-normal fallback that lowers confidence".
 This module is both the seam and the real provider:
 
-* ``WeatherForecast`` — a resolved target-date forecast carrying provenance
+* ``WeatherForecast``: a resolved target-date forecast carrying provenance
   (``source``), freshness (``stale``/``age_hours``), wind, and a ``missing`` flag.
-* ``FrameWeatherProvider`` — resolves a forecast from the stored ``weather``
+* ``FrameWeatherProvider``: resolves a forecast from the stored ``weather``
   table. The same path serves the synthetic generator's historical rows and the
   real forecasts written by ``scripts/fetch_weather.py``, so staleness/confidence
   handling is identical regardless of source.
-* ``OpenMeteoWeatherProvider`` — the **real** provider: it calls the Open-Meteo
+* ``OpenMeteoWeatherProvider``: the **real** provider: it calls the Open-Meteo
   API (free, no API key) for a location's coordinates, returning daily forecasts
   (``daily_forecasts``/``forecast_for``) and historical reanalysis proxies from the ERA5
   archive (``daily_actuals``). Network/parse failures degrade to seasonal normal.
-* ``seasonal_normal_forecast`` — the low-confidence fallback used when no
+* ``seasonal_normal_forecast``: the low-confidence fallback used when no
   forecast row or API result exists for the target date.
 
 A forecast is *stale* when it was made more than ``STALE_FORECAST_AGE_HOURS``

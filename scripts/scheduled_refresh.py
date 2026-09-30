@@ -4,18 +4,18 @@ Run this on a schedule (GitHub Actions, cron, Windows Task Scheduler, ...). It:
 
 1. **Fetches real Open-Meteo weather** (forecasts + recent actuals) for every
    active account that has location coordinates.
-2. **Refreshes synthetic demo data** for the demo accounts — including the dummy
-   account — up to today.
+2. **Refreshes synthetic demo data** for the demo accounts (including the dummy
+   account) up to today.
 
 Weather is fetched first on purpose, so the refresh regenerates recommendations
 from the real forecast instead of stale/synthetic weather.
 
 Connections:
 
-* ``DATABASE_URL`` (low-privilege app role) — used for every tenant-scoped read
+* ``DATABASE_URL`` (low-privilege app role): used for every tenant-scoped read
   and write, so the whole job is RLS-safe. Sufficient on its own to cover the
   built-in demo accounts.
-* ``MIGRATION_DATABASE_URL`` (admin/owner) — *optional*. Used only to **discover**
+* ``MIGRATION_DATABASE_URL`` (admin/owner): *optional*. Used only to **discover**
   accounts beyond the demo set (a cross-tenant read of ``accounts``). If it is
   unset, or cannot read across tenants, the job still covers the demo accounts
   and prints that it did so.
@@ -86,7 +86,7 @@ def refresh_demo_data(database_url: str, today: date) -> int:
     for account_id, location_id in DEMO_LOCATION_PAIRS:
         if latest_metric_date(database_url, account_id, location_id) is None:
             print(
-                f"  {account_id}/{location_id}: no seed data — run "
+                f"  {account_id}/{location_id}: no seed data. Run "
                 "scripts/load_observed_data.py first; skipping"
             )
             continue
@@ -199,7 +199,7 @@ def main() -> None:
     recommendation_rows = refresh_demo_data(settings.database_url, refresh_today)
 
     print(
-        f"done — {forecasts} forecast row(s), {actuals} actual(s) backfilled, "
+        f"done: {forecasts} forecast row(s), {actuals} actual(s) backfilled, "
         f"{recommendation_rows} recommendation rows"
     )
 

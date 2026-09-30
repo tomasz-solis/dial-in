@@ -182,12 +182,12 @@ def _render_owner_summary(payload: PerformancePayload) -> None:
 
     with st.expander("How to read this summary"):
         st.markdown(
-            "- **Estimated margin protected** is a modelled comparison, not accounting profit.\n"
-            "- The **95% interval** describes uncertainty in the average gain, not the range "
-            "expected on an individual day.\n"
-            "- **Lower prep-miss cost is better**, provided sellouts do not rise.\n"
-            "- Sold-out rows are excluded from the euro comparison because true demand is hidden.\n"
-            "- Treat fewer than 28 open days as early evidence, not a business verdict."
+            "- Estimated margin protected is a modelled comparison, not accounting profit.\n"
+            "- The 95% interval is uncertainty in the average gain, not the range to expect on "
+            "any one day.\n"
+            "- Lower prep-miss cost is better, as long as sellouts don't rise.\n"
+            "- Sold-out rows are left out of the euro comparison because true demand is hidden.\n"
+            "- Fewer than 28 open days is early evidence, not a business verdict."
         )
 
 
@@ -208,7 +208,7 @@ def _render_readiness(readiness: dict[str, Any]) -> None:
     st.markdown("#### Getting to a verdict")
     st.caption(
         "A credible euro verdict needs clean economics and enough clean open days. This is the "
-        "observed progress toward it — not a business result yet."
+        "observed progress toward it, not a business result yet."
     )
     st.progress(
         percent / 100,
@@ -251,7 +251,7 @@ def _owner_verdict(cost: dict[str, Any]) -> tuple[str, str, str]:
             return (
                 "Early positive signal",
                 f"Prep-miss cost is €{float(savings):.2f}/open day lower than the better simple "
-                "rule, but its approximate 95% interval still includes zero — keep collecting "
+                "rule, but its approximate 95% interval still includes zero. Keep collecting "
                 "evidence.",
                 "info",
             )
@@ -501,12 +501,12 @@ def _render_model_quality(
     )
     _render_cost_cards(cost)
     st.caption(
-        "These are modelled euros, not cash in the till. They estimate the money lost each open "
-        "day to over-prep (wasted food) and under-prep (missed sales + the drink that rides "
-        "along), comparing Dial In's prep against the cheaper of two simple same-weekday rules "
-        "(last week, or the 4-week average). Computed from your category economics on "
-        "uncensored days only. Sold-out rows are excluded because sales reveal only a lower "
-        "bound on demand; the excluded share is shown alongside the model-quality readout."
+        "Modelled euros, not cash in the till: the money lost each open day to over-prep (wasted "
+        "food) and under-prep (missed sales plus the drink that goes with them), for Dial In vs "
+        "the cheaper of two simple same-weekday rules (last week, or the 4-week average). Uses "
+        "your category economics on uncensored days only. Sold-out rows are left out because "
+        "their sales only show a lower bound on demand; the share left out is shown with the "
+        "model-quality readout."
     )
     st.plotly_chart(
         charts.cost_comparison_figure(cost),
@@ -541,8 +541,8 @@ def _render_model_quality(
     )
     st.caption(
         "Calibration and pinball are scored on uncensored days only. Pinball against censored "
-        "sales is biased toward low point forecasts, so treat it as a floor, not the verdict — "
-        "the ground-truth panel below is the unbiased read."
+        "sales is biased toward low point forecasts, so treat it as a floor, not the verdict. "
+        "The ground-truth panel below is the unbiased read."
     )
     quality_left, quality_right = st.columns(2, gap="large")
     with quality_left:
@@ -576,14 +576,13 @@ def _render_advanced_reading_guide() -> None:
 
     with st.expander("How to read the advanced analysis"):
         st.markdown(
-            "1. **Start with expected cost:** lower is better, but it is modelled rather than "
-            "booked profit.\n"
-            "2. **Check the gate:** a category remains advisory until evidence, calibration, "
-            "bias, censoring, and both baselines pass.\n"
-            "3. **Read direction, not noise:** repeated positive or negative error matters more "
-            "than one unusual day.\n"
-            "4. **Check data health last:** missing closeouts, POS rejects, and frequent sellouts "
-            "can make every performance chart less trustworthy."
+            "1. Start with expected cost. Lower is better, but it's modelled, not booked profit.\n"
+            "2. Check the gate. A category stays advisory until evidence, calibration, bias, "
+            "censoring and both baselines pass.\n"
+            "3. Read direction, not noise. Repeated positive or negative error matters more than "
+            "one odd day.\n"
+            "4. Check data health last. Missing closeouts, POS rejects and frequent sellouts make "
+            "every performance chart less trustworthy."
         )
 
 
@@ -736,9 +735,9 @@ def _render_truth_quality(
 
     st.markdown("#### Measured against synthetic ground truth (demo only)")
     st.caption(
-        "Synthetic data has a known true demand on every day, including sold-out days, so this "
-        "is the unbiased read the observed metrics above cannot give. Real cafés have no truth "
-        "file, so this panel only appears in the demo."
+        "Synthetic data has a known true demand every day, including sold-out days, so this is "
+        "the unbiased read the observed metrics above can't give. Real cafés have no truth file, "
+        "so this panel only appears in the demo."
     )
     st.markdown(
         ui.card_grid(
@@ -789,10 +788,9 @@ def _render_probe_panel(mt: pd.DataFrame) -> None:
         return
     st.markdown("#### De-censoring probe (demo only)")
     st.caption(
-        "On a controlled share of low-risk days the app deliberately prepped a few units "
-        "above the usual number to learn where demand really tops out (PRD section 12). "
-        "Against synthetic truth we can show what that revealed; real cafés see only the "
-        "bounded extra cost, disclosed in advance."
+        "On a small share of low-risk days the app prepped a few extra units on purpose, to "
+        "learn where demand really tops out (PRD section 12). Synthetic truth shows what that "
+        "revealed. Real cafés only see the capped extra cost, disclosed in advance."
     )
     st.markdown(
         ui.card_grid(
@@ -829,14 +827,14 @@ def _truth_coverage_caption(coverage: dict[str, Any]) -> str:
 
 
 def _savings_caption(cost: dict[str, Any]) -> str:
-    """State how much less Dial In loses than the simple rule — a modelled estimate."""
+    """State how much less Dial In loses than the simple rule, as a modelled estimate."""
 
     savings = cost.get("savings_per_day_vs_best")
     days = int(cost.get("dates") or 0)
     if savings is None:
         return "Modelled estimate, not cash."
     if savings > 0:
-        return f"Loses €{float(savings):.2f}/day less over {days} days — modelled, not cash."
+        return f"Loses €{float(savings):.2f}/day less over {days} days. Modelled, not cash."
     if savings < 0:
         return f"Loses €{-float(savings):.2f}/day more than the simple rule."
     return f"About even with the simple rule over {days} days."
@@ -912,7 +910,8 @@ def _render_scorecard_snapshot(card: dict[str, Any]) -> None:
                 ui.proof_card(
                     "Waste proxy delta",
                     summary["waste_delta_label"],
-                    "Illustrative replay; both sides use censored sales — not a counterfactual.",
+                    "Illustrative replay. Both sides use censored sales, so it is not a "
+                    "counterfactual.",
                 ),
                 ui.proof_card(
                     "Followed rate",
